@@ -1,0 +1,472 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">MongoDB Connection Analysis</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <a href="{{ url_for('slow_queries') }}" class="btn btn-sm btn-warning">
+                <i class="fas fa-clock me-2"></i>Slow Query Analysis
+            </a>
+            <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Upload New Log</a>
+        </div>
+    </div>
+</div>
+
+{% if stats %}
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-success">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Auth Success</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.auth_success_count if stats.auth_success_count else 0 }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-success text-white">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-danger">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">Auth Failures</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.auth_failure_count if stats.auth_failure_count else 0 }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-danger text-white">
+                            <i class="fas fa-times-circle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Databases</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.unique_databases|length if stats.unique_databases else 0 }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-database"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-secondary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-secondary text-uppercase mb-1">DB Operations</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.database_access|length if stats.database_access else 0 }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-secondary text-white">
+                            <i class="fas fa-cogs"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-primary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Total Connections</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.total_connections }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-primary text-white">
+                            <i class="fas fa-plug"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-success">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Unique IPs</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.unique_ips }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-success text-white">
+                            <i class="fas fa-network-wired"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Slow Queries</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.slow_queries_count }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card card-stats border-left-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Unique Users</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ stats.unique_users|length if stats.unique_users else 0 }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-warning text-white">
+                            <i class="fas fa-user"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="fas fa-chart-pie me-1"></i>
+                Connections by IP Address
+            </div>
+            <div class="card-body">
+                <canvas id="connectionsChart" width="100%" height="70"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="fas fa-chart-bar me-1"></i>
+                Connection Timeline
+            </div>
+            <div class="card-body" style="height: 300px; overflow-y: auto;">
+                {% if stats.connections_timeline %}
+                    {% for connection in stats.connections_timeline[-20:] %}
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="me-3">
+                            {% if connection.type == 'connection_accepted' %}
+                                <i class="fas fa-arrow-right text-success"></i>
+                            {% else %}
+                                <i class="fas fa-arrow-left text-danger"></i>
+                            {% endif %}
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="fw-bold">{{ connection.ip }}:{{ connection.port }}</div>
+                            <small class="text-muted">
+                                {{ connection.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} - 
+                                {{ 'Connected' if connection.type == 'connection_accepted' else 'Disconnected' }}
+                                {% if connection.connection_id %}(conn{{ connection.connection_id }}){% endif %}
+                            </small>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if stats.connections_timeline|length > 20 %}
+                        <small class="text-muted">Showing last 20 events of {{ stats.connections_timeline|length }} total</small>
+                    {% endif %}
+                {% else %}
+                    <p class="text-muted">No connection events found in the log file.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="fas fa-users me-1"></i>
+                User Activity Summary
+            </div>
+            <div class="card-body">
+                <div class="table-responsive" style="overflow-x: auto; max-width: 100%;">
+                    <table class="table table-bordered table-nowrap">
+                        <thead>
+                            <tr>
+                                <th style="min-width: 120px;">Username</th>
+                                <th style="min-width: 150px;">Auth Status</th>
+                                <th style="min-width: 140px;">Auth Mechanism</th>
+                                <th style="min-width: 200px;">Databases</th>
+                                <th style="min-width: 120px;">Last Seen</th>
+                                <th style="min-width: 100px;">Connections</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if stats.user_activity %}
+                                {% for username, activity in stats.user_activity.items() %}
+                                <tr>
+                                    <td class="fw-bold">{{ username }}</td>
+                                    <td>
+                                        {% if activity.auth_success %}
+                                            <span class="badge bg-success">
+                                                <i class="fas fa-check-circle me-1"></i>Success
+                                            </span>
+                                        {% endif %}
+                                        {% if activity.auth_failures > 0 %}
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-times-circle me-1"></i>{{ activity.auth_failures }} Failed
+                                            </span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small class="text-muted">{{ activity.auth_mechanism if activity.auth_mechanism else 'Unknown' }}</small>
+                                    </td>
+                                    <td>
+                                        {% for db in activity.databases %}
+                                            <span class="badge bg-info me-1">{{ db }}</span>
+                                        {% endfor %}
+                                    </td>
+                                    <td>
+                                        {% if activity.last_seen %}
+                                            <small>{{ activity.last_seen.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                        {% else %}
+                                            <small class="text-muted">Unknown</small>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-primary rounded-pill">{{ activity.connection_count }}</span>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            {% else %}
+                                <tr>
+                                    <td colspan="6" class="text-center text-muted">No user authentication data found</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="fas fa-database me-1"></i>
+                Database Access Summary
+            </div>
+            <div class="card-body">
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto; overflow-x: auto;">
+                    <table class="table table-bordered table-nowrap">
+                        <thead>
+                            <tr>
+                                <th style="min-width: 100px;">User</th>
+                                <th style="min-width: 120px;">Database</th>
+                                <th style="min-width: 120px;">Collection</th>
+                                <th style="min-width: 100px;">Command</th>
+                                <th style="min-width: 120px;">Connection ID</th>
+                                <th style="min-width: 140px;">Timestamp</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if stats.database_access %}
+                                {% for access in stats.database_access[-50:] %}
+                                <tr>
+                                    <td>
+                                        {% if access.username %}
+                                            <span class="badge bg-primary">{{ access.username }}</span>
+                                        {% else %}
+                                            <small class="text-muted">Unknown</small>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-info">{{ access.database }}</span>
+                                    </td>
+                                    <td>{{ access.collection }}</td>
+                                    <td>
+                                        {% if access.command_type == 'find' %}
+                                            <span class="badge bg-success">
+                                                <i class="fas fa-search me-1"></i>Find
+                                            </span>
+                                        {% elif access.command_type == 'insert' %}
+                                            <span class="badge bg-primary">
+                                                <i class="fas fa-plus me-1"></i>Insert
+                                            </span>
+                                        {% elif access.command_type == 'update' %}
+                                            <span class="badge bg-warning">
+                                                <i class="fas fa-edit me-1"></i>Update
+                                            </span>
+                                        {% elif access.command_type == 'remove' or access.command_type == 'delete' %}
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-trash me-1"></i>Delete
+                                            </span>
+                                        {% elif access.command_type == 'aggregate' %}
+                                            <span class="badge bg-secondary">
+                                                <i class="fas fa-chart-bar me-1"></i>Aggregate
+                                            </span>
+                                        {% elif access.command_type == 'count' %}
+                                            <span class="badge bg-dark">
+                                                <i class="fas fa-calculator me-1"></i>Count
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-light text-dark">{{ access.command_type or 'Unknown' }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small class="text-muted">conn{{ access.connection_id }}</small>
+                                    </td>
+                                    <td>
+                                        <small>{{ access.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                                {% if stats.database_access|length > 50 %}
+                                    <tr>
+                                        <td colspan="6" class="text-center text-muted">
+                                            <small>Showing last 50 of {{ stats.database_access|length }} database operations</small>
+                                        </td>
+                                    </tr>
+                                {% endif %}
+                            {% else %}
+                                <tr>
+                                    <td colspan="6" class="text-center text-muted">No database access data found</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-table me-1"></i>
+                IP Address Connection Summary
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-bordered" id="dataTable">
+                        <thead>
+                            <tr>
+                                <th>IP Address</th>
+                                <th>Total Connections</th>
+                                <th>Connection Type</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ip, count in stats.connections_by_ip.items() %}
+                            <tr>
+                                <td class="fw-bold">{{ ip }}</td>
+                                <td>
+                                    <span class="badge bg-primary rounded-pill">{{ count }}</span>
+                                </td>
+                                <td>
+                                    {% if ip.startswith('127.0.0.1') or ip.startswith('localhost') %}
+                                        <span class="badge bg-success">Local</span>
+                                    {% elif ip.startswith('192.168.') or ip.startswith('10.') or ip.startswith('172.') %}
+                                        <span class="badge bg-info">Internal</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">External</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge bg-secondary">Analyzed</span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Chart for connections by IP
+const ctx = document.getElementById('connectionsChart').getContext('2d');
+const connectionData = {{ stats.connections_by_ip | safe }};
+const labels = Object.keys(connectionData);
+const data = Object.values(connectionData);
+
+const colors = [
+    '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', 
+    '#FF9F40', '#FF6384', '#C9CBCF', '#4BC0C0', '#FF6384'
+];
+
+new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+        labels: labels,
+        datasets: [{
+            data: data,
+            backgroundColor: colors.slice(0, labels.length),
+            hoverBackgroundColor: colors.slice(0, labels.length)
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: 'bottom',
+            }
+        }
+    }
+});
+</script>
+
+{% else %}
+<div class="row">
+    <div class="col-12">
+        <div class="alert alert-info" role="alert">
+            <h4 class="alert-heading">No Data Available</h4>
+            <p>No MongoDB log file has been analyzed yet. Please upload a log file to see the connection analysis.</p>
+            <hr>
+            <a href="{{ url_for('index') }}" class="btn btn-primary">Upload Log File</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}

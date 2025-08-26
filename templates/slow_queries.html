@@ -1,0 +1,338 @@
+{% extends "base.html" %}
+
+{% block title %}Slow Query Analysis - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">Slow Query Analysis</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-success" id="exportBtn">
+                <i class="fas fa-download me-2"></i>Export Results
+            </button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Filter Controls -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-filter me-2"></i>Filter Options</h5>
+            </div>
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('slow_queries') }}" class="row g-3">
+                    <div class="col-md-4">
+                        <label for="database" class="form-label">Database</label>
+                        <select class="form-select" id="database" name="database">
+                            <option value="all" {% if selected_db == 'all' %}selected{% endif %}>All Databases</option>
+                            {% for db in databases %}
+                                <option value="{{ db }}" {% if selected_db == db %}selected{% endif %}>{{ db }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="threshold" class="form-label">Slow Query Threshold (ms)</label>
+                        <input type="number" class="form-control" id="threshold" name="threshold" 
+                               value="{{ threshold }}" min="1" step="1" placeholder="100">
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary me-2">
+                            <i class="fas fa-filter me-2"></i>Apply Filters
+                        </button>
+                        <a href="{{ url_for('slow_queries') }}" class="btn btn-outline-secondary">
+                            <i class="fas fa-undo me-2"></i>Reset
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Results Summary -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card card-stats border-left-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Total Slow Queries</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ total_queries }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-warning text-white">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Threshold</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ threshold }}ms</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-tachometer-alt"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-primary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Database Filter</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            {% if selected_db == 'all' %}All{% else %}{{ selected_db }}{% endif %}
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-primary text-white">
+                            <i class="fas fa-database"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    {% if queries %}
+    <div class="col-md-3">
+        <div class="card card-stats border-left-danger">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">Slowest Query</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ queries[0].duration }}ms</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-danger text-white">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Slow Queries Table -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-list me-2"></i>
+                    Slow Queries 
+                    {% if selected_db != 'all' %}
+                        <span class="badge bg-info">{{ selected_db }}</span>
+                    {% endif %}
+                    <span class="badge bg-warning">≥{{ threshold }}ms</span>
+                </h5>
+                {% if queries %}
+                <small class="text-muted">Sorted by execution time (slowest first)</small>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if queries %}
+                    <div class="table-responsive" style="overflow-x: auto;">
+                        <table class="table table-bordered table-hover table-nowrap">
+                            <thead class="table-primary">
+                                <tr>
+                                    <th style="min-width: 80px; color: #000; font-weight: bold;">#</th>
+                                    <th style="min-width: 100px; color: #000; font-weight: bold;">Duration</th>
+                                    <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
+                                    <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
+                                    <th style="min-width: 100px; color: #000; font-weight: bold;">Connection</th>
+                                    <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
+                                    <th style="min-width: 400px; color: #000; font-weight: bold;">Query</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for query in queries %}
+                                <tr>
+                                    <td class="text-center">{{ loop.index }}</td>
+                                    <td class="text-center">
+                                        {% if query.duration >= 5000 %}
+                                            <span class="badge bg-danger fs-6">{{ query.duration }}ms</span>
+                                        {% elif query.duration >= 1000 %}
+                                            <span class="badge bg-warning fs-6">{{ query.duration }}ms</span>
+                                        {% else %}
+                                            <span class="badge bg-info fs-6">{{ query.duration }}ms</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
+                                    </td>
+                                    <td>{{ query.collection or 'unknown' }}</td>
+                                    <td class="text-center">
+                                        <small class="text-muted">conn{{ query.connection_id }}</small>
+                                    </td>
+                                    <td>
+                                        <small>{{ query.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                    </td>
+                                    <td>
+                                        <div class="query-text" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
+                                             title="{{ query.query }}">
+                                            {{ query.query[:100] }}{% if query.query|length > 100 %}...{% endif %}
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-primary mt-1" 
+                                                data-bs-toggle="modal" 
+                                                data-bs-target="#queryModal"
+                                                data-query-number="{{ loop.index }}"
+                                                data-query-text="{{ query.query|e }}">
+                                            <i class="fas fa-expand-alt me-1"></i>View Full
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-5">
+                        <div class="mb-3">
+                            <i class="fas fa-search fa-3x text-muted"></i>
+                        </div>
+                        <h4 class="text-muted">No Slow Queries Found</h4>
+                        <p class="text-muted">
+                            {% if total_queries == 0 %}
+                                No queries found matching the current filters.
+                            {% else %}
+                                Try adjusting the threshold or database filter to see more results.
+                            {% endif %}
+                        </p>
+                        <a href="{{ url_for('slow_queries') }}" class="btn btn-primary">
+                            <i class="fas fa-undo me-2"></i>Reset Filters
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Full Query Modal -->
+<div class="modal fade" id="queryModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Full Query Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Query #<span id="queryNumber"></span></label>
+                    <pre id="fullQuery" class="bg-light p-3 rounded" style="white-space: pre-wrap; word-break: break-all;"></pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="copyQuery()">
+                    <i class="fas fa-copy me-2"></i>Copy Query
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Simple approach using Bootstrap's built-in modal events
+document.addEventListener('DOMContentLoaded', function() {
+    const queryModal = document.getElementById('queryModal');
+    
+    // Listen for modal show event
+    queryModal.addEventListener('show.bs.modal', function(event) {
+        // Button that triggered the modal
+        const button = event.relatedTarget;
+        
+        // Extract info from data-* attributes
+        const queryNumber = button.getAttribute('data-query-number');
+        const queryText = button.getAttribute('data-query-text');
+        
+        // Update the modal's content
+        const modalQueryNumber = queryModal.querySelector('#queryNumber');
+        const modalQueryText = queryModal.querySelector('#fullQuery');
+        
+        modalQueryNumber.textContent = queryNumber;
+        modalQueryText.textContent = queryText;
+    });
+    
+    // Export button functionality
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function() {
+            const params = new URLSearchParams(window.location.search);
+            const exportUrl = '{{ url_for("export_slow_queries") }}?' + params.toString();
+            window.open(exportUrl, '_blank');
+        });
+    }
+    
+    // Auto-update threshold as user types
+    const thresholdInput = document.getElementById('threshold');
+    if (thresholdInput) {
+        thresholdInput.addEventListener('input', function() {
+            const form = this.closest('form');
+            clearTimeout(form.updateTimer);
+            form.updateTimer = setTimeout(() => {
+                // Optional: Auto-submit after user stops typing for 1 second
+                // form.submit();
+            }, 1000);
+        });
+    }
+});
+
+// Copy query function
+function copyQuery() {
+    const queryText = document.getElementById('fullQuery').textContent;
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(queryText).then(function() {
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-primary');
+            }, 2000);
+        }).catch(function(err) {
+            console.error('Copy failed:', err);
+            alert('Copy failed. Please select and copy manually.');
+        });
+    } else {
+        // Fallback: select text for manual copy
+        const queryElement = document.getElementById('fullQuery');
+        const range = document.createRange();
+        range.selectNodeContents(queryElement);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        
+        alert('Text selected. Please press Ctrl+C (Cmd+C on Mac) to copy.');
+    }
+}
+
+</script>
+
+{% endblock %}

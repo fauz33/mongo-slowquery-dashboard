@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Log - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">MongoDB Log Analyzer</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card card-stats">
+            <div class="card-body text-center py-5">
+                <div class="stats-icon bg-primary text-white mx-auto mb-4">
+                    <i class="fas fa-upload"></i>
+                </div>
+                <h3 class="card-title mb-4">Upload MongoDB Log Files</h3>
+                <p class="text-muted mb-4">
+                    Upload your MongoDB log files to analyze connection patterns, identify users connecting to your database, and track database access.
+                </p>
+                
+                <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data" class="mb-4">
+                    <div class="mb-3">
+                        <label for="files" class="form-label">Choose MongoDB log files or compressed archives</label>
+                        <input type="file" class="form-control form-control-lg" id="files" name="files" accept=".log,.txt,.zip,.tar,.gz" multiple required>
+                        <div class="form-text">
+                            <div class="mb-1">You can select multiple files by holding Ctrl (Windows/Linux) or Cmd (Mac)</div>
+                            <div class="small text-muted">
+                                <strong>Supported formats:</strong> 
+                                <span class="badge bg-success me-1">.log</span>
+                                <span class="badge bg-success me-1">.txt</span>
+                                <span class="badge bg-info me-1">.zip</span>
+                                <span class="badge bg-info me-1">.tar</span>
+                                <span class="badge bg-info">.tar.gz</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-lg">
+                        <i class="fas fa-upload me-2"></i>Upload and Analyze
+                    </button>
+                </form>
+                
+                <div class="text-muted small">
+                    <p><strong>Supported formats:</strong> .log, .txt files + .zip, .tar, .tar.gz archives</p>
+                    <p><strong>Max file size:</strong> 50 MB per file</p>
+                    <p><strong>Archive extraction:</strong> Automatically extracts and processes log files from compressed archives</p>
+                    <p><strong>What we analyze:</strong> Connection events, user authentication, database access, slow queries</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('files').addEventListener('change', function(e) {
+    const files = e.target.files;
+    let logFileCount = 0;
+    let archiveCount = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+        const fileName = files[i].name.toLowerCase();
+        const fileSize = files[i].size / 1024 / 1024; // MB
+        
+        // Check file size
+        if (fileSize > 50) {
+            alert(`File '${files[i].name}' exceeds 50MB limit. Please choose smaller files.`);
+            e.target.value = '';
+            return;
+        }
+        
+        // Count file types
+        if (fileName.endsWith('.zip') || fileName.endsWith('.tar') || fileName.endsWith('.tar.gz')) {
+            archiveCount++;
+        } else if (fileName.endsWith('.log') || fileName.endsWith('.txt')) {
+            logFileCount++;
+        }
+    }
+    
+    if (files.length > 0) {
+        let buttonText = '<i class="fas fa-upload me-2"></i>Upload and Analyze ';
+        
+        if (archiveCount > 0 && logFileCount > 0) {
+            buttonText += `${files.length} Files (${logFileCount} logs, ${archiveCount} archives)`;
+        } else if (archiveCount > 0) {
+            buttonText += `${archiveCount} Archive${archiveCount > 1 ? 's' : ''}`;
+        } else {
+            buttonText += `${logFileCount} Log File${logFileCount > 1 ? 's' : ''}`;
+        }
+        
+        document.querySelector('button[type="submit"]').innerHTML = buttonText;
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,177 @@
+.border-left-primary {
+    border-left: 0.25rem solid #4e73df !important;
+}
+
+.border-left-success {
+    border-left: 0.25rem solid #1cc88a !important;
+}
+
+.border-left-info {
+    border-left: 0.25rem solid #36b9cc !important;
+}
+
+.border-left-warning {
+    border-left: 0.25rem solid #f6c23e !important;
+}
+
+.border-left-danger {
+    border-left: 0.25rem solid #e74a3b !important;
+}
+
+.border-left-secondary {
+    border-left: 0.25rem solid #858796 !important;
+}
+
+.text-xs {
+    font-size: 0.7rem;
+}
+
+.card {
+    box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15) !important;
+    border: 1px solid #e3e6f0 !important;
+}
+
+.card .card-header {
+    background-color: #f8f9fc;
+    border-bottom: 1px solid #e3e6f0;
+}
+
+.table th {
+    background-color: #f8f9fc;
+    border-top: none;
+}
+
+.no-gutters {
+    margin-right: 0;
+    margin-left: 0;
+}
+
+.no-gutters > .col,
+.no-gutters > [class*="col-"] {
+    padding-right: 0;
+    padding-left: 0;
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+    .sidebar {
+        position: static;
+        padding: 0;
+        box-shadow: none;
+    }
+    
+    .sidebar .nav-link {
+        padding: .75rem 1rem;
+        border-bottom: 1px solid #e3e6f0;
+    }
+    
+    main {
+        margin-left: 0 !important;
+    }
+    
+    .card-stats {
+        margin-bottom: 1rem;
+    }
+    
+    .stats-icon {
+        width: 50px;
+        height: 50px;
+        font-size: 20px;
+    }
+}
+
+/* Custom animations */
+.card {
+    transition: transform 0.2s;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+}
+
+.badge {
+    font-size: 0.75em;
+}
+
+/* File upload styling */
+.form-control:focus {
+    border-color: #4e73df;
+    box-shadow: 0 0 0 0.2rem rgba(78, 115, 223, 0.25);
+}
+
+/* Table styling */
+.table-responsive {
+    border: 1px solid #e3e6f0;
+    border-radius: 0.35rem;
+}
+
+/* Alert styling */
+.alert-info {
+    background-color: #d1ecf1;
+    border-color: #bee5eb;
+    color: #0c5460;
+}
+
+/* Horizontal scrolling table */
+.table-nowrap {
+    white-space: nowrap;
+}
+
+.table-nowrap th,
+.table-nowrap td {
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* Enhanced table scrolling */
+.table-responsive {
+    border-radius: 0.35rem;
+}
+
+.table-responsive::-webkit-scrollbar {
+    height: 8px;
+}
+
+.table-responsive::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.table-responsive::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+.table-responsive::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Enhanced table header visibility */
+.table-primary th {
+    background-color: #b3d7ff !important;
+    color: #000 !important;
+    font-weight: bold !important;
+    border-color: #dee2e6 !important;
+}
+
+.table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background-color: #b3d7ff !important;
+    color: #000 !important;
+    font-weight: bold !important;
+}
+
+/* Ensure text is always visible */
+.table th {
+    color: #000 !important;
+    font-weight: bold !important;
+    text-shadow: none !important;
+}
+
+/* Fix for dark theme compatibility */
+.table-dark th {
+    background-color: #343a40 !important;
+    color: #fff !important;
+}
