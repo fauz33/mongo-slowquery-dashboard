@@ -367,19 +367,30 @@ class MongoLogAnalyzer:
                 events_found = True
             
             # Parse command operations
-            elif component == 'COMMAND' and message == 'command':
+            elif component == 'COMMAND' and (message == 'command' or message == 'Slow query'):
                 command_info = attr.get('command', {})
                 duration_stats = attr.get('durationStats', {})
-                duration = duration_stats.get('millis', 0) if duration_stats else 0
+                # Handle both duration formats
+                if duration_stats:
+                    duration = duration_stats.get('millis', 0)
+                else:
+                    # Direct durationMillis field (for slow query logs)
+                    duration = attr.get('durationMillis', 0)
                 
                 # Extract database and collection info
                 command_name = next(iter(command_info.keys())) if command_info else 'unknown'
-                collection = command_info.get(command_name, 'unknown') if isinstance(command_info.get(command_name), str) else 'unknown'
                 
-                # Get database from namespace or other sources
-                database = attr.get('ns', '').split('.')[0] if '.' in attr.get('ns', '') else 'unknown'
-                if database == 'unknown':
+                # Get database and collection from namespace
+                ns = attr.get('ns', '')
+                if '.' in ns:
+                    database, collection = ns.split('.', 1)
+                else:
                     database = attr.get('database', 'unknown')
+                    # Try to get collection from command
+                    if isinstance(command_info.get(command_name), str):
+                        collection = command_info.get(command_name, 'unknown')
+                    else:
+                        collection = 'unknown'
                 
                 # Store database access
                 self.database_access.append({
@@ -412,9 +423,65 @@ class MongoLogAnalyzer:
             
             return events_found
             
-        except json.JSONDecodeError:
-            # If JSON parsing fails, try text format
-            return self.parse_text_log_line(line, file_summary)
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, try to extract basic info for slow queries
+            if 'Slow query' in line and 'durationMillis' in line:
+                # Try to extract basic slow query info even from malformed JSON
+                try:
+                    # Extract namespace
+                    ns_match = re.search(r'"ns":"([^"]+)"', line)
+                    database = 'unknown'
+                    collection = 'unknown'
+                    if ns_match and '.' in ns_match.group(1):
+                        database, collection = ns_match.group(1).split('.', 1)
+                    
+                    # Extract duration
+                    duration_match = re.search(r'"durationMillis":(\d+)', line)
+                    duration = int(duration_match.group(1)) if duration_match else 0
+                    
+                    # Extract connection ID
+                    ctx_match = re.search(r'"ctx":"(conn\d+)"', line)
+                    conn_id = ctx_match.group(1).replace('conn', '') if ctx_match else 'unknown'
+                    
+                    # Extract timestamp
+                    timestamp_match = re.search(r'"t":\{"\\$date":"([^"]+)"\}', line)
+                    if timestamp_match:
+                        timestamp = datetime.fromisoformat(timestamp_match.group(1).replace('Z', '+00:00'))
+                    else:
+                        timestamp = datetime.now()
+                    
+                    if duration > 100:  # Only add if it's actually slow
+                        self.slow_queries.append({
+                            'timestamp': timestamp,
+                            'connection_id': conn_id,
+                            'duration': duration,
+                            'database': database,
+                            'collection': collection,
+                            'query': f'Slow query on {database}.{collection} - {duration}ms'
+                        })
+                        
+                        self.database_access.append({
+                            'timestamp': timestamp,
+                            'connection_id': conn_id,
+                            'database': database,
+                            'collection': collection,
+                            'command_type': 'aggregate',  # Most of the slow queries are aggregate
+                            'username': None,
+                            'operation': 'command'
+                        })
+                        
+                        self.parsing_summary['slow_query_events'] += 1
+                        self.parsing_summary['command_events'] += 1
+                        if file_summary:
+                            file_summary['slow_query_events'] += 1
+                            file_summary['command_events'] += 1
+                        events_found = True
+                        
+                except Exception as extract_error:
+                    print(f"Could not extract slow query info: {extract_error}")
+            
+            # Fall back to text format parsing
+            return self.parse_text_log_line(line, file_summary) or events_found
     
     def parse_text_log_line(self, line, file_summary=None):
         """Parse legacy text format MongoDB log lines"""
