@@ -276,18 +276,24 @@ class MongoLogAnalyzer:
             # Extract timestamp
             timestamp = self.extract_json_timestamp(log_entry)
             
-            # Extract connection ID from context
-            ctx = log_entry.get('ctx', '')
-            conn_id = ctx.replace('conn', '') if ctx.startswith('conn') else 'unknown'
-            
             # Parse different types of events
             component = log_entry.get('c', '')
             message = log_entry.get('msg', '')
             log_id = log_entry.get('id', 0)
             attr = log_entry.get('attr', {})
             
+            # Extract connection ID from context
+            ctx = log_entry.get('ctx', '')
+            if ctx.startswith('conn') and ctx != 'conn':
+                conn_id = ctx.replace('conn', '')
+            elif ctx == 'listener':
+                # For listener events, get connectionId from attr
+                conn_id = str(attr.get('connectionId', 'unknown'))
+            else:
+                conn_id = 'unknown'
+            
             # Parse connection events
-            if component == 'NETWORK' and 'connection accepted' in message:
+            if component == 'NETWORK' and ('connection accepted' in message or 'Connection accepted' in message):
                 remote = attr.get('remote', '')
                 if ':' in remote:
                     ip, port = remote.rsplit(':', 1)
@@ -306,7 +312,7 @@ class MongoLogAnalyzer:
                     events_found = True
             
             # Parse connection end events
-            elif component == 'NETWORK' and ('connection ended' in message or 'end connection' in message):
+            elif component == 'NETWORK' and ('connection ended' in message or 'Connection ended' in message or 'end connection' in message):
                 remote = attr.get('remote', '')
                 if ':' in remote:
                     ip, port = remote.rsplit(':', 1)
@@ -324,8 +330,8 @@ class MongoLogAnalyzer:
             
             # Parse authentication events
             elif component == 'ACCESS' and 'Successfully authenticated' in message:
-                principal = attr.get('principalName', '')
-                auth_db = attr.get('authenticationDatabase', '')
+                principal = attr.get('user', attr.get('principalName', ''))
+                auth_db = attr.get('db', attr.get('authenticationDatabase', ''))
                 mechanism = attr.get('mechanism', 'SCRAM-SHA-256')
                 
                 self.authentications.append({
