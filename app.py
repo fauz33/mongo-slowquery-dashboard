@@ -14,10 +14,12 @@ import shutil
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['TEMP_FOLDER'] = 'temp'
 # Removed file size limit - can now upload files of any size
 
-# Ensure upload folder exists
+# Ensure folders exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'log', 'txt', 'zip', 'tar', 'gz'}
 
@@ -82,6 +84,29 @@ def extract_archive(archive_path, extract_to_dir):
 def is_log_file(filename):
     """Check if file is a log file"""
     return filename.lower().endswith(('.log', '.txt'))
+
+def cleanup_temp_folder():
+    """Clean up temp folder before each upload"""
+    temp_folder = app.config['TEMP_FOLDER']
+    if os.path.exists(temp_folder):
+        try:
+            # Remove all contents of temp folder
+            for filename in os.listdir(temp_folder):
+                file_path = os.path.join(temp_folder, filename)
+                if os.path.isfile(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            print(f"Cleaned up temp folder: {temp_folder}")
+        except Exception as e:
+            print(f"Error cleaning temp folder: {e}")
+
+def create_temp_file(original_filename):
+    """Create a unique temporary file path"""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+    name, ext = os.path.splitext(original_filename)
+    temp_filename = f"temp_{timestamp}_{name}{ext}"
+    return os.path.join(app.config['TEMP_FOLDER'], temp_filename)
 
 class MongoLogAnalyzer:
     def __init__(self):
@@ -375,77 +400,80 @@ def upload_file():
         flash('No files selected')
         return redirect(url_for('index'))
     
-    uploaded_files = []
-    extracted_files = []
-    # Create timestamped extraction directory
-    extraction_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    extraction_dir = os.path.join(app.config['UPLOAD_FOLDER'], f'extracted_{extraction_timestamp}')
+    # Clean up temp folder before processing new uploads
+    cleanup_temp_folder()
     
-    for file in files:
-        if file and allowed_file(file.filename):
-            # Create timestamp-based filename to prevent conflicts
-            original_filename = secure_filename(file.filename)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]  # microseconds to milliseconds
-            name, ext = os.path.splitext(original_filename)
-            filename = f"{timestamp}_{name}{ext}"
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
-            
-            # Check if it's an archive file
-            if is_archive_file(filename):
-                # Extract archive files
-                extracted = extract_archive(filepath, extraction_dir)
-                if extracted:
-                    extracted_files.extend(extracted)
-                    flash(f'Extracted {len(extracted)} log file(s) from {filename}')
+    temp_files_created = []
+    extracted_files = []
+    extraction_dir = os.path.join(app.config['TEMP_FOLDER'], f'extracted_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+    
+    try:
+        for file in files:
+            if file and allowed_file(file.filename):
+                original_filename = secure_filename(file.filename)
+                temp_filepath = create_temp_file(original_filename)
+                
+                # Save to temp location
+                file.save(temp_filepath)
+                temp_files_created.append(temp_filepath)
+                
+                # Check if it's an archive file
+                if is_archive_file(original_filename):
+                    # Extract archive files to temp directory
+                    extracted = extract_archive(temp_filepath, extraction_dir)
+                    if extracted:
+                        extracted_files.extend(extracted)
+                        flash(f'Extracted {len(extracted)} log file(s) from {original_filename}')
+                    else:
+                        flash(f'No valid log files found in archive {original_filename}', 'warning')
+                elif is_log_file(original_filename):
+                    # Regular log file - keep temp path for processing
+                    pass
                 else:
-                    flash(f'No valid log files found in archive {filename}', 'warning')
-            elif is_log_file(filename):
-                # Regular log file
-                uploaded_files.append(filepath)
+                    flash(f'Invalid file type for {file.filename}. Please upload .log, .txt, .zip, .tar, or .tar.gz files only.')
+                    return redirect(url_for('index'))
             else:
                 flash(f'Invalid file type for {file.filename}. Please upload .log, .txt, .zip, .tar, or .tar.gz files only.')
                 return redirect(url_for('index'))
+        
+        # Combine temp files and extracted files for analysis
+        log_files_to_analyze = []
+        for temp_file in temp_files_created:
+            if is_log_file(temp_file):
+                log_files_to_analyze.append(temp_file)
+        log_files_to_analyze.extend(extracted_files)
+        
+        if log_files_to_analyze:
+            # Clear previous analysis
+            analyzer.connections = []
+            analyzer.slow_queries = []
+            analyzer.authentications = []
+            analyzer.database_access = []
+            
+            # Analyze all files
+            processed_count = 0
+            for filepath in log_files_to_analyze:
+                if os.path.exists(filepath) and is_log_file(filepath):
+                    analyzer.parse_log_file(filepath)
+                    processed_count += 1
+            
+            total_direct = len([f for f in temp_files_created if is_log_file(f)])
+            total_extracted = len(extracted_files)
+            
+            if total_extracted > 0:
+                flash(f'Successfully processed {processed_count} log files ({total_direct} direct, {total_extracted} extracted from archives)!')
+            else:
+                flash(f'{processed_count} file{"s" if processed_count > 1 else ""} processed successfully!')
+            
+            return redirect(url_for('dashboard'))
         else:
-            flash(f'Invalid file type for {file.filename}. Please upload .log, .txt, .zip, .tar, or .tar.gz files only.')
+            flash('No valid log files to process.')
             return redirect(url_for('index'))
-    
-    # Combine uploaded files and extracted files
-    all_files_to_analyze = uploaded_files + extracted_files
-    
-    if all_files_to_analyze:
-        # Clear previous analysis
-        analyzer.connections = []
-        analyzer.slow_queries = []
-        analyzer.authentications = []
-        analyzer.database_access = []
-        
-        # Analyze all files (both direct uploads and extracted)
-        processed_count = 0
-        for filepath in all_files_to_analyze:
-            if os.path.exists(filepath) and is_log_file(filepath):
-                analyzer.parse_log_file(filepath)
-                processed_count += 1
-        
-        # Clean up extracted files after analysis
-        if extracted_files and os.path.exists(extraction_dir):
-            try:
-                shutil.rmtree(extraction_dir)
-            except:
-                pass  # Ignore cleanup errors
-        
-        total_uploaded = len(uploaded_files)
-        total_extracted = len(extracted_files)
-        
-        if total_extracted > 0:
-            flash(f'Successfully processed {processed_count} log files ({total_uploaded} uploaded, {total_extracted} extracted from archives)!')
-        else:
-            flash(f'{processed_count} file{"s" if processed_count > 1 else ""} uploaded and analyzed successfully!')
-        
-        return redirect(url_for('dashboard'))
-    else:
-        flash('No valid log files to process.')
-        return redirect(url_for('index'))
+            
+    finally:
+        # Cleanup happens automatically on next upload via cleanup_temp_folder()
+        # But we could also clean up immediately if needed
+        pass
 
 @app.route('/dashboard')
 def dashboard():
@@ -531,4 +559,4 @@ def export_slow_queries():
     return response
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='127.0.0.1', port=5000)  # Listen only on localhost
