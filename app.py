@@ -182,30 +182,94 @@ class MongoLogAnalyzer:
         self.slow_queries = []
         self.authentications = []
         self.database_access = []
+        self.parsing_summary = {
+            'total_lines': 0,
+            'json_lines': 0,
+            'text_lines': 0,
+            'parsed_lines': 0,
+            'error_lines': 0,
+            'skipped_lines': 0,
+            'connection_events': 0,
+            'auth_events': 0,
+            'command_events': 0,
+            'slow_query_events': 0,
+            'files_processed': 0,
+            'parsing_errors': [],
+            'file_summaries': []  # Per-file tracking
+        }
         
     def parse_log_file(self, filepath):
         """Parse MongoDB log file and extract connection information"""
         # Don't clear arrays here as we might be processing multiple files
+        filename = os.path.basename(filepath)
+        
+        # Initialize per-file tracking
+        file_summary = {
+            'filename': filename,
+            'filepath': filepath,
+            'total_lines': 0,
+            'json_lines': 0,
+            'text_lines': 0,
+            'parsed_lines': 0,
+            'error_lines': 0,
+            'skipped_lines': 0,
+            'connection_events': 0,
+            'auth_events': 0,
+            'command_events': 0,
+            'slow_query_events': 0,
+            'parsing_errors': [],
+            'has_useful_data': False
+        }
+        
+        # Update global counters
+        self.parsing_summary['files_processed'] += 1
         
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as file:
             for line_num, line in enumerate(file, 1):
+                # Update both global and file-specific counters
+                self.parsing_summary['total_lines'] += 1
+                file_summary['total_lines'] += 1
                 line = line.strip()
+                
                 if not line:
+                    self.parsing_summary['skipped_lines'] += 1
+                    file_summary['skipped_lines'] += 1
                     continue
                 
                 try:
                     # Try to parse as JSON format first
                     if line.startswith('{') and line.endswith('}'):
-                        self.parse_json_log_line(line)
+                        self.parsing_summary['json_lines'] += 1
+                        file_summary['json_lines'] += 1
+                        events_found = self.parse_json_log_line(line, file_summary)
                     else:
                         # Fall back to legacy text format
-                        self.parse_text_log_line(line)
+                        self.parsing_summary['text_lines'] += 1
+                        file_summary['text_lines'] += 1
+                        events_found = self.parse_text_log_line(line, file_summary)
+                    
+                    self.parsing_summary['parsed_lines'] += 1
+                    file_summary['parsed_lines'] += 1
+                    
+                    # Mark file as having useful data if events were found
+                    if events_found:
+                        file_summary['has_useful_data'] = True
+                    
                 except Exception as e:
-                    print(f"Error parsing line {line_num}: {e}")
+                    self.parsing_summary['error_lines'] += 1
+                    file_summary['error_lines'] += 1
+                    error_msg = f"Line {line_num}: {str(e)[:100]}"
+                    self.parsing_summary['parsing_errors'].append(f"{filename}: {error_msg}")
+                    file_summary['parsing_errors'].append(error_msg)
+                    print(f"Error parsing line {line_num} in {filename}: {e}")
                     continue
+        
+        # Store file summary
+        self.parsing_summary['file_summaries'].append(file_summary)
     
-    def parse_json_log_line(self, line):
+    def parse_json_log_line(self, line, file_summary=None):
         """Parse MongoDB JSON format log line"""
+        events_found = False
         try:
             log_entry = json.loads(line)
             
@@ -236,6 +300,10 @@ class MongoLogAnalyzer:
                         'user': None,
                         'database': None
                     })
+                    self.parsing_summary['connection_events'] += 1
+                    if file_summary:
+                        file_summary['connection_events'] += 1
+                    events_found = True
             
             # Parse connection end events
             elif component == 'NETWORK' and ('connection ended' in message or 'end connection' in message):
@@ -249,6 +317,10 @@ class MongoLogAnalyzer:
                         'connection_id': conn_id,
                         'type': 'connection_ended'
                     })
+                    self.parsing_summary['connection_events'] += 1
+                    if file_summary:
+                        file_summary['connection_events'] += 1
+                    events_found = True
             
             # Parse authentication events
             elif component == 'ACCESS' and 'Successfully authenticated' in message:
@@ -264,6 +336,10 @@ class MongoLogAnalyzer:
                     'mechanism': mechanism,
                     'type': 'auth_success'
                 })
+                self.parsing_summary['auth_events'] += 1
+                if file_summary:
+                    file_summary['auth_events'] += 1
+                events_found = True
             
             # Parse authentication failures
             elif component == 'ACCESS' and ('Authentication failed' in message or 'Failed to authenticate' in message):
@@ -279,6 +355,10 @@ class MongoLogAnalyzer:
                     'mechanism': mechanism,
                     'type': 'auth_failure'
                 })
+                self.parsing_summary['auth_events'] += 1
+                if file_summary:
+                    file_summary['auth_events'] += 1
+                events_found = True
             
             # Parse command operations
             elif component == 'COMMAND' and message == 'command':
@@ -305,6 +385,10 @@ class MongoLogAnalyzer:
                     'username': None,  # Will be filled later
                     'operation': 'command'
                 })
+                self.parsing_summary['command_events'] += 1
+                if file_summary:
+                    file_summary['command_events'] += 1
+                events_found = True
                 
                 # Check if it's a slow query
                 if duration > 100:  # Consider queries > 100ms as slow
@@ -316,13 +400,20 @@ class MongoLogAnalyzer:
                         'collection': collection,
                         'query': json.dumps(command_info, indent=None)
                     })
+                    self.parsing_summary['slow_query_events'] += 1
+                    if file_summary:
+                        file_summary['slow_query_events'] += 1
+            
+            return events_found
             
         except json.JSONDecodeError:
             # If JSON parsing fails, try text format
-            self.parse_text_log_line(line)
+            return self.parse_text_log_line(line, file_summary)
     
-    def parse_text_log_line(self, line):
+    def parse_text_log_line(self, line, file_summary=None):
         """Parse legacy text format MongoDB log lines"""
+        events_found = False
+        
         # Parse connection events
         connection_match = re.search(r'connection accepted from ([0-9.]+):(\d+) #conn(\d+)', line)
         if connection_match:
@@ -340,6 +431,9 @@ class MongoLogAnalyzer:
                 'user': None,
                 'database': None
             })
+            if file_summary:
+                file_summary['connection_events'] += 1
+            events_found = True
         
         # Parse end connection events
         end_connection_match = re.search(r'end connection ([0-9.]+):(\d+) \((\d+) connection', line)
@@ -459,6 +553,11 @@ class MongoLogAnalyzer:
                         'collection': collection,
                         'query': line
                     })
+                    if file_summary:
+                        file_summary['slow_query_events'] += 1
+                    events_found = True
+        
+        return events_found
     
     def extract_json_timestamp(self, log_entry):
         """Extract timestamp from JSON log entry"""
@@ -592,6 +691,70 @@ class MongoLogAnalyzer:
         }
         
         return stats
+    
+    def get_parsing_summary_message(self):
+        """Generate a human-readable parsing summary message"""
+        summary = self.parsing_summary
+        messages = []
+        
+        # Overall parsing stats
+        messages.append(f"📊 **Overall Summary:** Processed {summary['files_processed']} file(s) with {summary['total_lines']:,} total lines")
+        
+        if summary['json_lines'] > 0:
+            messages.append(f"📝 Found {summary['json_lines']:,} JSON format lines and {summary['text_lines']:,} text format lines")
+        else:
+            messages.append(f"📝 Found {summary['text_lines']:,} text format lines (no JSON format detected)")
+        
+        # Overall events found
+        events_found = []
+        if summary['connection_events'] > 0:
+            events_found.append(f"{summary['connection_events']} connections")
+        if summary['auth_events'] > 0:
+            events_found.append(f"{summary['auth_events']} authentications") 
+        if summary['command_events'] > 0:
+            events_found.append(f"{summary['command_events']} database commands")
+        if summary['slow_query_events'] > 0:
+            events_found.append(f"{summary['slow_query_events']} slow queries")
+            
+        if events_found:
+            messages.append(f"✅ **Total Events Extracted:** {', '.join(events_found)}")
+        else:
+            messages.append("⚠️ **No relevant events found!** This appears to be system/startup logs rather than operational logs with connections, authentications, or database commands.")
+            messages.append("💡 **Tip:** Upload logs that contain connection events, authentication attempts, and database operations for analysis.")
+        
+        # Per-file breakdown (only if multiple files or if single file has no useful data)
+        if len(summary['file_summaries']) > 1 or (len(summary['file_summaries']) == 1 and not summary['file_summaries'][0]['has_useful_data']):
+            messages.append("")
+            messages.append("📁 **Per-file breakdown:**")
+            
+            for file_info in summary['file_summaries']:
+                filename = file_info['filename']
+                lines = file_info['total_lines']
+                
+                # Build event list for this file
+                file_events = []
+                if file_info['connection_events'] > 0:
+                    file_events.append(f"{file_info['connection_events']} connections")
+                if file_info['auth_events'] > 0:
+                    file_events.append(f"{file_info['auth_events']} auth")
+                if file_info['command_events'] > 0:
+                    file_events.append(f"{file_info['command_events']} commands")
+                if file_info['slow_query_events'] > 0:
+                    file_events.append(f"{file_info['slow_query_events']} slow queries")
+                
+                if file_events:
+                    messages.append(f"✅ **{filename}:** {lines} lines → {', '.join(file_events)}")
+                else:
+                    messages.append(f"⚠️ **{filename}:** {lines} lines → 0 events (system/startup logs only)")
+        
+        # Errors and warnings
+        if summary['error_lines'] > 0:
+            messages.append(f"⚠️ {summary['error_lines']} lines had parsing errors")
+            
+        if summary['skipped_lines'] > 0:
+            messages.append(f"ℹ️ Skipped {summary['skipped_lines']} empty lines")
+            
+        return messages
 
 analyzer = MongoLogAnalyzer()
 
@@ -654,11 +817,9 @@ def upload_file():
         log_files_to_analyze.extend(extracted_files)
         
         if log_files_to_analyze:
-            # Clear previous analysis
-            analyzer.connections = []
-            analyzer.slow_queries = []
-            analyzer.authentications = []
-            analyzer.database_access = []
+            # Clear previous analysis (create new analyzer instance)
+            global analyzer
+            analyzer = MongoLogAnalyzer()
             
             # Analyze all files
             processed_count = 0
@@ -667,13 +828,10 @@ def upload_file():
                     analyzer.parse_log_file(filepath)
                     processed_count += 1
             
-            total_direct = len([f for f in temp_files_created if is_log_file(f)])
-            total_extracted = len(extracted_files)
-            
-            if total_extracted > 0:
-                flash(f'Successfully processed {processed_count} log files ({total_direct} direct, {total_extracted} extracted from archives)!')
-            else:
-                flash(f'{processed_count} file{"s" if processed_count > 1 else ""} processed successfully!')
+            # Generate parsing summary messages
+            summary_messages = analyzer.get_parsing_summary_message()
+            for message in summary_messages:
+                flash(message)
             
             return redirect(url_for('dashboard'))
         else:
