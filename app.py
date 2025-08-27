@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from werkzeug.utils import secure_filename
 import os
 import re
+import json
 from datetime import datetime
 import pandas as pd
 from collections import defaultdict, Counter
@@ -9,6 +10,7 @@ import tempfile
 import io
 import zipfile
 import tarfile
+import gzip
 import shutil
 
 app = Flask(__name__)
@@ -27,14 +29,37 @@ def allowed_file(filename):
     # Check for .tar.gz files specifically
     if filename.lower().endswith('.tar.gz'):
         return True
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    
+    # Check for date-suffixed log files (e.g., mongodb.log.20250826, app.log.2025-08-26)
+    if '.log.' in filename.lower() or '.txt.' in filename.lower():
+        return True
+    
+    # Check standard extensions
+    if '.' in filename:
+        ext = filename.rsplit('.', 1)[1].lower()
+        if ext in ALLOWED_EXTENSIONS:
+            return True
+        
+        # Check if it's a date pattern after log/txt (e.g., .log.20250826)
+        parts = filename.lower().split('.')
+        if len(parts) >= 3:
+            # Check if second-to-last part is 'log' or 'txt'
+            if parts[-2] in ['log', 'txt']:
+                # Check if last part looks like a date (8 digits or date format)
+                last_part = parts[-1]
+                if (last_part.isdigit() and len(last_part) == 8) or \
+                   (last_part.replace('-', '').replace('_', '').isdigit()):
+                    return True
+    
+    return False
 
 def is_archive_file(filename):
     """Check if file is a compressed archive"""
     filename_lower = filename.lower()
     return (filename_lower.endswith('.zip') or 
             filename_lower.endswith('.tar') or 
-            filename_lower.endswith('.tar.gz'))
+            filename_lower.endswith('.tar.gz') or
+            filename_lower.endswith('.gz'))
 
 def extract_archive(archive_path, extract_to_dir):
     """Extract archive and return list of extracted log files"""
@@ -49,9 +74,10 @@ def extract_archive(archive_path, extract_to_dir):
             with zipfile.ZipFile(archive_path, 'r') as zip_ref:
                 for member in zip_ref.namelist():
                     # Only extract files that look like log files
-                    if (member.lower().endswith(('.log', '.txt')) and 
+                    member_name = member.split('/')[-1]  # Get filename without path
+                    if (is_log_file(member_name) and 
                         not member.startswith('__MACOSX/') and 
-                        '/' not in member.split('/')[-1]):  # Skip directories
+                        member_name):  # Skip directories and empty names
                         
                         zip_ref.extract(member, extract_to_dir)
                         extracted_path = os.path.join(extract_to_dir, member)
@@ -63,9 +89,10 @@ def extract_archive(archive_path, extract_to_dir):
             mode = 'r:gz' if archive_path.lower().endswith('.tar.gz') else 'r'
             with tarfile.open(archive_path, mode) as tar_ref:
                 for member in tar_ref.getmembers():
+                    member_name = member.name.split('/')[-1]  # Get filename without path
                     if (member.isfile() and 
-                        member.name.lower().endswith(('.log', '.txt')) and
-                        '/' not in member.name.split('/')[-1]):  # Skip directories
+                        is_log_file(member_name) and
+                        member_name):  # Skip directories and empty names
                         
                         # Extract with safe name (avoid directory traversal)
                         safe_name = os.path.basename(member.name)
@@ -75,6 +102,26 @@ def extract_archive(archive_path, extract_to_dir):
                         if os.path.isfile(extracted_path):
                             extracted_files.append(extracted_path)
         
+        elif archive_path.lower().endswith('.gz') and not archive_path.lower().endswith('.tar.gz'):
+            # Handle standalone .gz files
+            with gzip.open(archive_path, 'rb') as gz_file:
+                # Create output filename by removing .gz extension
+                base_name = os.path.basename(archive_path)
+                if base_name.lower().endswith('.gz'):
+                    output_name = base_name[:-3]  # Remove .gz extension
+                else:
+                    output_name = base_name + '.extracted'
+                
+                output_path = os.path.join(extract_to_dir, output_name)
+                
+                # Write decompressed content
+                with open(output_path, 'wb') as output_file:
+                    shutil.copyfileobj(gz_file, output_file)
+                
+                # Only add if it looks like a log file
+                if is_log_file(output_name):
+                    extracted_files.append(output_path)
+        
         return extracted_files
         
     except Exception as e:
@@ -83,7 +130,28 @@ def extract_archive(archive_path, extract_to_dir):
 
 def is_log_file(filename):
     """Check if file is a log file"""
-    return filename.lower().endswith(('.log', '.txt'))
+    filename_lower = filename.lower()
+    
+    # Standard log files
+    if filename_lower.endswith(('.log', '.txt')):
+        return True
+    
+    # Date-suffixed log files (e.g., mongodb.log.20250826)
+    if '.log.' in filename_lower or '.txt.' in filename_lower:
+        return True
+    
+    # Check pattern: something.log.datepattern or something.txt.datepattern
+    parts = filename_lower.split('.')
+    if len(parts) >= 3:
+        # Check if second-to-last part is 'log' or 'txt'
+        if parts[-2] in ['log', 'txt']:
+            # Check if last part looks like a date
+            last_part = parts[-1]
+            if (last_part.isdigit() and len(last_part) == 8) or \
+               (last_part.replace('-', '').replace('_', '').isdigit()):
+                return True
+    
+    return False
 
 def cleanup_temp_folder():
     """Clean up temp folder before each upload"""
@@ -120,19 +188,45 @@ class MongoLogAnalyzer:
         # Don't clear arrays here as we might be processing multiple files
         
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as file:
-            for line in file:
+            for line_num, line in enumerate(file, 1):
                 line = line.strip()
                 if not line:
                     continue
-                    
-                # Parse connection events
-                connection_match = re.search(r'connection accepted from ([0-9.]+):(\d+) #conn(\d+)', line)
-                if connection_match:
-                    ip = connection_match.group(1)
-                    port = connection_match.group(2)
-                    conn_id = connection_match.group(3)
-                    timestamp = self.extract_timestamp(line)
-                    
+                
+                try:
+                    # Try to parse as JSON format first
+                    if line.startswith('{') and line.endswith('}'):
+                        self.parse_json_log_line(line)
+                    else:
+                        # Fall back to legacy text format
+                        self.parse_text_log_line(line)
+                except Exception as e:
+                    print(f"Error parsing line {line_num}: {e}")
+                    continue
+    
+    def parse_json_log_line(self, line):
+        """Parse MongoDB JSON format log line"""
+        try:
+            log_entry = json.loads(line)
+            
+            # Extract timestamp
+            timestamp = self.extract_json_timestamp(log_entry)
+            
+            # Extract connection ID from context
+            ctx = log_entry.get('ctx', '')
+            conn_id = ctx.replace('conn', '') if ctx.startswith('conn') else 'unknown'
+            
+            # Parse different types of events
+            component = log_entry.get('c', '')
+            message = log_entry.get('msg', '')
+            log_id = log_entry.get('id', 0)
+            attr = log_entry.get('attr', {})
+            
+            # Parse connection events
+            if component == 'NETWORK' and 'connection accepted' in message:
+                remote = attr.get('remote', '')
+                if ':' in remote:
+                    ip, port = remote.rsplit(':', 1)
                     self.connections.append({
                         'timestamp': timestamp,
                         'ip': ip,
@@ -142,125 +236,241 @@ class MongoLogAnalyzer:
                         'user': None,
                         'database': None
                     })
-                
-                # Parse end connection events
-                end_connection_match = re.search(r'end connection ([0-9.]+):(\d+) \((\d+) connection', line)
-                if end_connection_match:
-                    ip = end_connection_match.group(1)
-                    port = end_connection_match.group(2)
-                    timestamp = self.extract_timestamp(line)
-                    
+            
+            # Parse connection end events
+            elif component == 'NETWORK' and ('connection ended' in message or 'end connection' in message):
+                remote = attr.get('remote', '')
+                if ':' in remote:
+                    ip, port = remote.rsplit(':', 1)
                     self.connections.append({
                         'timestamp': timestamp,
                         'ip': ip,
                         'port': port,
-                        'connection_id': None,
+                        'connection_id': conn_id,
                         'type': 'connection_ended'
                     })
+            
+            # Parse authentication events
+            elif component == 'ACCESS' and 'Successfully authenticated' in message:
+                principal = attr.get('principalName', '')
+                auth_db = attr.get('authenticationDatabase', '')
+                mechanism = attr.get('mechanism', 'SCRAM-SHA-256')
                 
-                # Parse authentication events
-                auth_match = re.search(r'Successfully authenticated as principal ([^@\s]+)(@([^@\s]+))? on ([^@\s]+)', line)
-                if auth_match:
-                    username = auth_match.group(1)
-                    database = auth_match.group(4)
-                    timestamp = self.extract_timestamp(line)
-                    conn_match = re.search(r'\[conn(\d+)\]', line)
-                    conn_id = conn_match.group(1) if conn_match else 'unknown'
-                    
-                    # Extract authentication mechanism if available
-                    mechanism = 'SCRAM-SHA-1'  # Default MongoDB mechanism
-                    if 'SCRAM-SHA-256' in line:
-                        mechanism = 'SCRAM-SHA-256'
-                    elif 'MONGODB-CR' in line:
-                        mechanism = 'MONGODB-CR'
-                    elif 'GSSAPI' in line:
-                        mechanism = 'GSSAPI'
-                    elif 'X.509' in line:
-                        mechanism = 'X.509'
-                    
-                    self.authentications.append({
+                self.authentications.append({
+                    'timestamp': timestamp,
+                    'connection_id': conn_id,
+                    'username': principal,
+                    'database': auth_db,
+                    'mechanism': mechanism,
+                    'type': 'auth_success'
+                })
+            
+            # Parse authentication failures
+            elif component == 'ACCESS' and ('Authentication failed' in message or 'Failed to authenticate' in message):
+                principal = attr.get('principalName', attr.get('user', ''))
+                auth_db = attr.get('authenticationDatabase', attr.get('db', ''))
+                mechanism = attr.get('mechanism', 'SCRAM-SHA-256')
+                
+                self.authentications.append({
+                    'timestamp': timestamp,
+                    'connection_id': conn_id,
+                    'username': principal,
+                    'database': auth_db,
+                    'mechanism': mechanism,
+                    'type': 'auth_failure'
+                })
+            
+            # Parse command operations
+            elif component == 'COMMAND' and message == 'command':
+                command_info = attr.get('command', {})
+                duration_stats = attr.get('durationStats', {})
+                duration = duration_stats.get('millis', 0) if duration_stats else 0
+                
+                # Extract database and collection info
+                command_name = next(iter(command_info.keys())) if command_info else 'unknown'
+                collection = command_info.get(command_name, 'unknown') if isinstance(command_info.get(command_name), str) else 'unknown'
+                
+                # Get database from namespace or other sources
+                database = attr.get('ns', '').split('.')[0] if '.' in attr.get('ns', '') else 'unknown'
+                if database == 'unknown':
+                    database = attr.get('database', 'unknown')
+                
+                # Store database access
+                self.database_access.append({
+                    'timestamp': timestamp,
+                    'connection_id': conn_id,
+                    'database': database,
+                    'collection': collection,
+                    'command_type': command_name.lower(),
+                    'username': None,  # Will be filled later
+                    'operation': 'command'
+                })
+                
+                # Check if it's a slow query
+                if duration > 100:  # Consider queries > 100ms as slow
+                    self.slow_queries.append({
                         'timestamp': timestamp,
                         'connection_id': conn_id,
-                        'username': username,
-                        'database': database,
-                        'mechanism': mechanism,
-                        'type': 'auth_success'
-                    })
-                
-                # Parse authentication failures
-                auth_fail_match = re.search(r'Failed to authenticate ([^@\s]+)(@([^@\s]+))? on ([^@\s]+)', line)
-                if auth_fail_match:
-                    username = auth_fail_match.group(1)
-                    database = auth_fail_match.group(4)
-                    timestamp = self.extract_timestamp(line)
-                    conn_match = re.search(r'\[conn(\d+)\]', line)
-                    conn_id = conn_match.group(1) if conn_match else 'unknown'
-                    
-                    # Extract mechanism from failure message
-                    mechanism = 'SCRAM-SHA-1'  # Default
-                    if 'SCRAM-SHA-1' in line:
-                        mechanism = 'SCRAM-SHA-1'
-                    elif 'SCRAM-SHA-256' in line:
-                        mechanism = 'SCRAM-SHA-256'
-                    elif 'MONGODB-CR' in line:
-                        mechanism = 'MONGODB-CR'
-                    elif 'GSSAPI' in line:
-                        mechanism = 'GSSAPI'
-                    elif 'X.509' in line:
-                        mechanism = 'X.509'
-                    
-                    self.authentications.append({
-                        'timestamp': timestamp,
-                        'connection_id': conn_id,
-                        'username': username,
-                        'database': database,
-                        'mechanism': mechanism,
-                        'type': 'auth_failure'
-                    })
-                
-                # Parse database access from commands
-                db_access_match = re.search(r'command ([^.\s]+)\.([^.\s]+) command: (\w+)', line)
-                if db_access_match:
-                    database = db_access_match.group(1)
-                    collection = db_access_match.group(2)
-                    command_type = db_access_match.group(3).lower()
-                    timestamp = self.extract_timestamp(line)
-                    conn_match = re.search(r'\[conn(\d+)\]', line)
-                    conn_id = conn_match.group(1) if conn_match else 'unknown'
-                    
-                    self.database_access.append({
-                        'timestamp': timestamp,
-                        'connection_id': conn_id,
+                        'duration': duration,
                         'database': database,
                         'collection': collection,
-                        'command_type': command_type,
-                        'username': None,  # Will be filled later
-                        'operation': 'command'
+                        'query': json.dumps(command_info, indent=None)
                     })
-                
-                # Parse slow queries
-                if 'ms' in line and ('command' in line or 'query' in line):
-                    slow_query_match = re.search(r'(\d+)ms$', line)
-                    if slow_query_match:
-                        duration = int(slow_query_match.group(1))
-                        if duration > 100:  # Consider queries > 100ms as slow
-                            timestamp = self.extract_timestamp(line)
-                            conn_match = re.search(r'\[conn(\d+)\]', line)
-                            conn_id = conn_match.group(1) if conn_match else 'unknown'
-                            
-                            # Extract database and collection from slow query
-                            db_match = re.search(r'command ([^.\s]+)\.([^.\s]+)', line)
-                            database = db_match.group(1) if db_match else 'unknown'
-                            collection = db_match.group(2) if db_match else 'unknown'
-                            
-                            self.slow_queries.append({
-                                'timestamp': timestamp,
-                                'connection_id': conn_id,
-                                'duration': duration,
-                                'database': database,
-                                'collection': collection,
-                                'query': line
-                            })
+            
+        except json.JSONDecodeError:
+            # If JSON parsing fails, try text format
+            self.parse_text_log_line(line)
+    
+    def parse_text_log_line(self, line):
+        """Parse legacy text format MongoDB log lines"""
+        # Parse connection events
+        connection_match = re.search(r'connection accepted from ([0-9.]+):(\d+) #conn(\d+)', line)
+        if connection_match:
+            ip = connection_match.group(1)
+            port = connection_match.group(2)
+            conn_id = connection_match.group(3)
+            timestamp = self.extract_timestamp(line)
+            
+            self.connections.append({
+                'timestamp': timestamp,
+                'ip': ip,
+                'port': port,
+                'connection_id': conn_id,
+                'type': 'connection_accepted',
+                'user': None,
+                'database': None
+            })
+        
+        # Parse end connection events
+        end_connection_match = re.search(r'end connection ([0-9.]+):(\d+) \((\d+) connection', line)
+        if end_connection_match:
+            ip = end_connection_match.group(1)
+            port = end_connection_match.group(2)
+            timestamp = self.extract_timestamp(line)
+            
+            self.connections.append({
+                'timestamp': timestamp,
+                'ip': ip,
+                'port': port,
+                'connection_id': None,
+                'type': 'connection_ended'
+            })
+        
+        # Parse authentication events
+        auth_match = re.search(r'Successfully authenticated as principal ([^@\s]+)(@([^@\s]+))? on ([^@\s]+)', line)
+        if auth_match:
+            username = auth_match.group(1)
+            database = auth_match.group(4)
+            timestamp = self.extract_timestamp(line)
+            conn_match = re.search(r'\[conn(\d+)\]', line)
+            conn_id = conn_match.group(1) if conn_match else 'unknown'
+            
+            # Extract authentication mechanism if available
+            mechanism = 'SCRAM-SHA-1'  # Default MongoDB mechanism
+            if 'SCRAM-SHA-256' in line:
+                mechanism = 'SCRAM-SHA-256'
+            elif 'MONGODB-CR' in line:
+                mechanism = 'MONGODB-CR'
+            elif 'GSSAPI' in line:
+                mechanism = 'GSSAPI'
+            elif 'X.509' in line:
+                mechanism = 'X.509'
+            
+            self.authentications.append({
+                'timestamp': timestamp,
+                'connection_id': conn_id,
+                'username': username,
+                'database': database,
+                'mechanism': mechanism,
+                'type': 'auth_success'
+            })
+        
+        # Parse authentication failures
+        auth_fail_match = re.search(r'Failed to authenticate ([^@\s]+)(@([^@\s]+))? on ([^@\s]+)', line)
+        if auth_fail_match:
+            username = auth_fail_match.group(1)
+            database = auth_fail_match.group(4)
+            timestamp = self.extract_timestamp(line)
+            conn_match = re.search(r'\[conn(\d+)\]', line)
+            conn_id = conn_match.group(1) if conn_match else 'unknown'
+            
+            # Extract mechanism from failure message
+            mechanism = 'SCRAM-SHA-1'  # Default
+            if 'SCRAM-SHA-1' in line:
+                mechanism = 'SCRAM-SHA-1'
+            elif 'SCRAM-SHA-256' in line:
+                mechanism = 'SCRAM-SHA-256'
+            elif 'MONGODB-CR' in line:
+                mechanism = 'MONGODB-CR'
+            elif 'GSSAPI' in line:
+                mechanism = 'GSSAPI'
+            elif 'X.509' in line:
+                mechanism = 'X.509'
+            
+            self.authentications.append({
+                'timestamp': timestamp,
+                'connection_id': conn_id,
+                'username': username,
+                'database': database,
+                'mechanism': mechanism,
+                'type': 'auth_failure'
+            })
+        
+        # Parse database access from commands
+        db_access_match = re.search(r'command ([^.\s]+)\.([^.\s]+) command: (\w+)', line)
+        if db_access_match:
+            database = db_access_match.group(1)
+            collection = db_access_match.group(2)
+            command_type = db_access_match.group(3).lower()
+            timestamp = self.extract_timestamp(line)
+            conn_match = re.search(r'\[conn(\d+)\]', line)
+            conn_id = conn_match.group(1) if conn_match else 'unknown'
+            
+            self.database_access.append({
+                'timestamp': timestamp,
+                'connection_id': conn_id,
+                'database': database,
+                'collection': collection,
+                'command_type': command_type,
+                'username': None,  # Will be filled later
+                'operation': 'command'
+            })
+        
+        # Parse slow queries
+        if 'ms' in line and ('command' in line or 'query' in line):
+            slow_query_match = re.search(r'(\d+)ms$', line)
+            if slow_query_match:
+                duration = int(slow_query_match.group(1))
+                if duration > 100:  # Consider queries > 100ms as slow
+                    timestamp = self.extract_timestamp(line)
+                    conn_match = re.search(r'\[conn(\d+)\]', line)
+                    conn_id = conn_match.group(1) if conn_match else 'unknown'
+                    
+                    # Extract database and collection from slow query
+                    db_match = re.search(r'command ([^.\s]+)\.([^.\s]+)', line)
+                    database = db_match.group(1) if db_match else 'unknown'
+                    collection = db_match.group(2) if db_match else 'unknown'
+                    
+                    self.slow_queries.append({
+                        'timestamp': timestamp,
+                        'connection_id': conn_id,
+                        'duration': duration,
+                        'database': database,
+                        'collection': collection,
+                        'query': line
+                    })
+    
+    def extract_json_timestamp(self, log_entry):
+        """Extract timestamp from JSON log entry"""
+        try:
+            t_obj = log_entry.get('t', {})
+            if isinstance(t_obj, dict) and '$date' in t_obj:
+                date_str = t_obj['$date']
+                # Parse ISO format timestamp
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            return datetime.now()
+        except:
+            return datetime.now()
     
     def extract_timestamp(self, line):
         """Extract timestamp from MongoDB log line"""
