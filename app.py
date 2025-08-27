@@ -14,7 +14,7 @@ import shutil
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+# Removed file size limit - can now upload files of any size
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -377,11 +377,17 @@ def upload_file():
     
     uploaded_files = []
     extracted_files = []
-    extraction_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'extracted')
+    # Create timestamped extraction directory
+    extraction_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    extraction_dir = os.path.join(app.config['UPLOAD_FOLDER'], f'extracted_{extraction_timestamp}')
     
     for file in files:
         if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
+            # Create timestamp-based filename to prevent conflicts
+            original_filename = secure_filename(file.filename)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]  # microseconds to milliseconds
+            name, ext = os.path.splitext(original_filename)
+            filename = f"{timestamp}_{name}{ext}"
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
             
