@@ -10,6 +10,9 @@
             <button type="button" class="btn btn-sm btn-success" id="exportBtn">
                 <i class="fas fa-download me-2"></i>Export Results
             </button>
+            <a href="{{ url_for('search_logs') }}" class="btn btn-sm btn-info">
+                <i class="fas fa-search me-2"></i>Search Logs
+            </a>
             <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
                 <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
             </a>
@@ -35,12 +38,22 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <div class="col-md-4">
-                        <label for="threshold" class="form-label">Slow Query Threshold (ms)</label>
+                    <div class="col-md-2">
+                        <label for="threshold" class="form-label">Threshold (ms)</label>
                         <input type="number" class="form-control" id="threshold" name="threshold" 
                                value="{{ threshold }}" min="1" step="1" placeholder="100">
                     </div>
-                    <div class="col-md-4 d-flex align-items-end">
+                    <div class="col-md-3">
+                        <label for="start_date" class="form-label">Start Date</label>
+                        <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
+                               value="{{ start_date or '' }}">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="end_date" class="form-label">End Date</label>
+                        <input type="datetime-local" class="form-control" id="end_date" name="end_date" 
+                               value="{{ end_date or '' }}">
+                    </div>
+                    <div class="col-md-12 d-flex align-items-end mt-2">
                         <button type="submit" class="btn btn-primary me-2">
                             <i class="fas fa-filter me-2"></i>Apply Filters
                         </button>
@@ -160,6 +173,8 @@
                                     <th style="min-width: 100px; color: #000; font-weight: bold;">Duration</th>
                                     <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
                                     <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
+                                    <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
+                                    <th style="min-width: 100px; color: #000; font-weight: bold;">User</th>
                                     <th style="min-width: 100px; color: #000; font-weight: bold;">Connection</th>
                                     <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
                                     <th style="min-width: 400px; color: #000; font-weight: bold;">Query</th>
@@ -182,6 +197,20 @@
                                         <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
                                     </td>
                                     <td>{{ query.collection or 'unknown' }}</td>
+                                    <td class="text-center">
+                                        {% if query.plan_summary and query.plan_summary != 'None' %}
+                                            <span class="badge bg-secondary">{{ query.plan_summary }}</span>
+                                        {% else %}
+                                            <span class="badge bg-light text-dark">none</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-center">
+                                        {% if query.username and query.username != 'Unknown' %}
+                                            <span class="badge bg-success">{{ query.username }}</span>
+                                        {% else %}
+                                            <span class="badge bg-light text-muted">unknown</span>
+                                        {% endif %}
+                                    </td>
                                     <td class="text-center">
                                         <small class="text-muted">conn{{ query.connection_id }}</small>
                                     </td>

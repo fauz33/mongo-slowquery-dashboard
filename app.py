@@ -182,6 +182,7 @@ class MongoLogAnalyzer:
         self.slow_queries = []
         self.authentications = []
         self.database_access = []
+        self.raw_log_data = {}  # Store raw log lines for searching
         self.parsing_summary = {
             'total_lines': 0,
             'json_lines': 0,
@@ -224,8 +225,14 @@ class MongoLogAnalyzer:
         # Update global counters
         self.parsing_summary['files_processed'] += 1
         
+        # Store raw lines for search functionality
+        raw_lines = []
+        
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as file:
             for line_num, line in enumerate(file, 1):
+                # Store the raw line
+                raw_lines.append(line.rstrip())
+                
                 # Update both global and file-specific counters
                 self.parsing_summary['total_lines'] += 1
                 file_summary['total_lines'] += 1
@@ -241,7 +248,7 @@ class MongoLogAnalyzer:
                     if line.startswith('{') and line.endswith('}'):
                         self.parsing_summary['json_lines'] += 1
                         file_summary['json_lines'] += 1
-                        events_found = self.parse_json_log_line(line, file_summary)
+                        events_found = self.parse_json_log_line(line, file_summary, filepath, line_num)
                     else:
                         # Fall back to legacy text format
                         self.parsing_summary['text_lines'] += 1
@@ -264,10 +271,13 @@ class MongoLogAnalyzer:
                     print(f"Error parsing line {line_num} in {filename}: {e}")
                     continue
         
+        # Store raw lines for search functionality
+        self.raw_log_data[filepath] = raw_lines
+        
         # Store file summary
         self.parsing_summary['file_summaries'].append(file_summary)
     
-    def parse_json_log_line(self, line, file_summary=None):
+    def parse_json_log_line(self, line, file_summary=None, filepath=None, line_num=None):
         """Parse MongoDB JSON format log line"""
         events_found = False
         try:
@@ -409,13 +419,18 @@ class MongoLogAnalyzer:
                 
                 # Check if it's a slow query
                 if duration > 100:  # Consider queries > 100ms as slow
+                    plan_summary = attr.get('planSummary', 'None')
                     self.slow_queries.append({
                         'timestamp': timestamp,
                         'connection_id': conn_id,
                         'duration': duration,
                         'database': database,
                         'collection': collection,
-                        'query': json.dumps(command_info, indent=None)
+                        'query': json.dumps(command_info, indent=None),
+                        'plan_summary': plan_summary,
+                        'username': None,  # Will be filled by correlation
+                        'file_path': filepath,
+                        'line_number': line_num
                     })
                     self.parsing_summary['slow_query_events'] += 1
                     if file_summary:
@@ -441,7 +456,21 @@ class MongoLogAnalyzer:
                     
                     # Extract connection ID
                     ctx_match = re.search(r'"ctx":"(conn\d+)"', line)
-                    conn_id = ctx_match.group(1).replace('conn', '') if ctx_match else 'unknown'
+                    if ctx_match:
+                        conn_id = ctx_match.group(1).replace('conn', '')
+                    else:
+                        # Try alternative patterns
+                        ctx_match2 = re.search(r'"ctx":"([^"]*conn\d+[^"]*)"', line)
+                        if ctx_match2:
+                            ctx_str = ctx_match2.group(1)
+                            conn_match = re.search(r'conn(\d+)', ctx_str)
+                            conn_id = conn_match.group(1) if conn_match else 'unknown'
+                        else:
+                            conn_id = 'unknown'
+                    
+                    # Extract plan summary
+                    plan_summary_match = re.search(r'"planSummary":"([^"]+)"', line)
+                    plan_summary = plan_summary_match.group(1) if plan_summary_match else 'None'
                     
                     # Extract timestamp
                     timestamp_match = re.search(r'"t":\{"\\$date":"([^"]+)"\}', line)
@@ -450,6 +479,23 @@ class MongoLogAnalyzer:
                     else:
                         timestamp = datetime.now()
                     
+                    # Extract query details from the line
+                    query_data = {}
+                    try:
+                        # Try to extract command details
+                        command_match = re.search(r'"command":\{([^}]*(?:\{[^}]*\}[^}]*)*)\}', line)
+                        if command_match:
+                            command_str = '{' + command_match.group(1) + '}'
+                            try:
+                                query_data = json.loads(command_str)
+                            except:
+                                query_data = {"raw_command": command_match.group(1)}
+                        else:
+                            # Fallback to simple description
+                            query_data = {"description": f"Query on {database}.{collection}"}
+                    except:
+                        query_data = {"description": f"Query on {database}.{collection}"}
+                    
                     if duration > 100:  # Only add if it's actually slow
                         self.slow_queries.append({
                             'timestamp': timestamp,
@@ -457,7 +503,11 @@ class MongoLogAnalyzer:
                             'duration': duration,
                             'database': database,
                             'collection': collection,
-                            'query': f'Slow query on {database}.{collection} - {duration}ms'
+                            'query': json.dumps(query_data, indent=None),
+                            'plan_summary': plan_summary,
+                            'username': None,  # Will be filled by correlation
+                            'file_path': filepath,
+                            'line_number': line_num
                         })
                         
                         self.database_access.append({
@@ -676,29 +726,61 @@ class MongoLogAnalyzer:
         for access in self.database_access:
             if access['connection_id'] in conn_to_user:
                 access['username'] = conn_to_user[access['connection_id']]
+        
+        # Also update slow queries with usernames
+        for query in self.slow_queries:
+            if query['connection_id'] in conn_to_user:
+                query['username'] = conn_to_user.get(query['connection_id'], None)
     
-    def get_connection_stats(self):
-        """Get connection statistics"""
+    def get_connection_stats(self, start_date=None, end_date=None, ip_filter=None, user_filter=None):
+        """Get connection statistics with optional filters"""
         if not self.connections:
             return {}
         
-        # Correlate users with database access records
+        # Apply filters to data
+        filtered_connections = self.connections
+        filtered_authentications = self.authentications
+        filtered_database_access = self.database_access
+        
+        if start_date or end_date or ip_filter or user_filter:
+            if start_date or end_date:
+                filtered_connections = [conn for conn in self.connections
+                                      if (not start_date or conn['timestamp'] >= start_date) and
+                                         (not end_date or conn['timestamp'] <= end_date)]
+                filtered_authentications = [auth for auth in self.authentications
+                                          if (not start_date or auth['timestamp'] >= start_date) and
+                                             (not end_date or auth['timestamp'] <= end_date)]
+                filtered_database_access = [access for access in self.database_access
+                                          if (not start_date or access['timestamp'] >= start_date) and
+                                             (not end_date or access['timestamp'] <= end_date)]
+            
+            if ip_filter:
+                filtered_connections = [conn for conn in filtered_connections
+                                      if ip_filter.lower() in conn['ip'].lower()]
+                
+            if user_filter:
+                filtered_authentications = [auth for auth in filtered_authentications
+                                          if auth['username'] and user_filter.lower() in auth['username'].lower()]
+                filtered_database_access = [access for access in filtered_database_access
+                                          if access.get('username') and user_filter.lower() in access['username'].lower()]
+        
+        # Use filtered data for the rest of the method
         self.correlate_users_with_access()
             
-        ip_counts = Counter([conn['ip'] for conn in self.connections if conn['type'] == 'connection_accepted'])
+        ip_counts = Counter([conn['ip'] for conn in filtered_connections if conn['type'] == 'connection_accepted'])
         
         # Group connections by IP
         connections_by_ip = defaultdict(list)
-        for conn in self.connections:
+        for conn in filtered_connections:
             connections_by_ip[conn['ip']].append(conn)
         
         # Get authentication statistics
-        auth_success = [auth for auth in self.authentications if auth['type'] == 'auth_success']
-        auth_failures = [auth for auth in self.authentications if auth['type'] == 'auth_failure']
+        auth_success = [auth for auth in filtered_authentications if auth['type'] == 'auth_success']
+        auth_failures = [auth for auth in filtered_authentications if auth['type'] == 'auth_failure']
         
         # Get unique users and databases
-        unique_users = set([auth['username'] for auth in self.authentications if auth['username']])
-        unique_databases = set([db['database'] for db in self.database_access if db['database'] != 'unknown'])
+        unique_users = set([auth['username'] for auth in filtered_authentications if auth['username']])
+        unique_databases = set([db['database'] for db in filtered_database_access if db['database'] != 'unknown'])
         
         # Combine authentication and database access data
         user_db_activity = defaultdict(lambda: {
@@ -726,7 +808,7 @@ class MongoLogAnalyzer:
                 if not user_db_activity[auth['username']]['auth_mechanism']:
                     user_db_activity[auth['username']]['auth_mechanism'] = auth.get('mechanism', 'Unknown')
         
-        for db_access in self.database_access:
+        for db_access in filtered_database_access:
             # Try to find username for this connection
             conn_auths = [auth for auth in auth_success if auth['connection_id'] == db_access['connection_id']]
             if conn_auths:
@@ -749,21 +831,171 @@ class MongoLogAnalyzer:
             }
         
         stats = {
-            'total_connections': len([c for c in self.connections if c['type'] == 'connection_accepted']),
+            'total_connections': len([c for c in filtered_connections if c['type'] == 'connection_accepted']),
             'unique_ips': len(ip_counts),
             'connections_by_ip': dict(ip_counts),
             'slow_queries_count': len(self.slow_queries),
-            'connections_timeline': sorted(self.connections, key=lambda x: x['timestamp']),
+            'connections_timeline': sorted(filtered_connections, key=lambda x: x['timestamp']),
             'auth_success_count': len(auth_success),
             'auth_failure_count': len(auth_failures),
             'unique_users': list(unique_users),
             'unique_databases': list(unique_databases),
             'user_activity': user_activity,
-            'database_access': self.database_access,
-            'authentications': self.authentications
+            'database_access': filtered_database_access,
+            'authentications': filtered_authentications
         }
         
         return stats
+    
+    def search_logs(self, keyword=None, field_name=None, field_value=None, use_regex=False, start_date=None, end_date=None, limit=100):
+        """Search through log entries with various criteria"""
+        import re
+        results = []
+        
+        for file_path, raw_lines in self.raw_log_data.items():
+            for line_num, line in enumerate(raw_lines, 1):
+                try:
+                    # Parse JSON to get timestamp for date filtering
+                    log_entry = json.loads(line.strip())
+                    timestamp = self.extract_timestamp_from_json(log_entry.get('t', {}))
+                    
+                    # Apply date filters
+                    if start_date and timestamp < start_date:
+                        continue
+                    if end_date and timestamp > end_date:
+                        continue
+                    
+                    # Apply search criteria
+                    match = True
+                    
+                    if keyword:
+                        # Simple keyword search in entire line
+                        if use_regex:
+                            if not re.search(keyword, line, re.IGNORECASE):
+                                match = False
+                        else:
+                            if keyword.lower() not in line.lower():
+                                match = False
+                    
+                    if field_name and field_value and match:
+                        # Field-specific search
+                        field_data = self.get_nested_field(log_entry, field_name)
+                        if field_data is None:
+                            match = False
+                        else:
+                            field_str = str(field_data)
+                            if use_regex:
+                                if not re.search(field_value, field_str, re.IGNORECASE):
+                                    match = False
+                            else:
+                                if field_value.lower() not in field_str.lower():
+                                    match = False
+                    
+                    if match:
+                        results.append({
+                            'file_path': file_path,
+                            'line_number': line_num,
+                            'timestamp': timestamp,
+                            'raw_line': line.strip(),
+                            'parsed_json': log_entry
+                        })
+                        
+                        if len(results) >= limit:
+                            break
+                            
+                except (json.JSONDecodeError, Exception):
+                    # Try to extract timestamp from malformed JSON
+                    timestamp = None
+                    # Try different timestamp patterns
+                    timestamp_patterns = [
+                        r'"t":\{"\\$date":"([^"]+)"\}',  # Escaped format
+                        r'"t":\{"\$date":"([^"]+)"\}',   # Standard format
+                        r'"t":\{"[$]date":"([^"]+)"\}'   # Alternative format
+                    ]
+                    
+                    for pattern in timestamp_patterns:
+                        timestamp_match = re.search(pattern, line)
+                        if timestamp_match:
+                            try:
+                                timestamp_str = timestamp_match.group(1)
+                                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                break
+                            except:
+                                continue
+                    
+                    # Apply date filters even for malformed JSON if we have timestamp
+                    if timestamp:
+                        if start_date and timestamp < start_date:
+                            continue
+                        if end_date and timestamp > end_date:
+                            continue
+                    
+                    # For non-JSON lines, only do keyword search
+                    if keyword:
+                        if use_regex:
+                            if re.search(keyword, line, re.IGNORECASE):
+                                results.append({
+                                    'file_path': file_path,
+                                    'line_number': line_num,
+                                    'timestamp': timestamp,
+                                    'raw_line': line.strip(),
+                                    'parsed_json': None
+                                })
+                        else:
+                            if keyword.lower() in line.lower():
+                                results.append({
+                                    'file_path': file_path,
+                                    'line_number': line_num,
+                                    'timestamp': timestamp,
+                                    'raw_line': line.strip(),
+                                    'parsed_json': None
+                                })
+                                
+                        if len(results) >= limit:
+                            break
+            
+            if len(results) >= limit:
+                break
+        
+        # Sort by timestamp if available, otherwise by file and line number
+        results.sort(key=lambda x: (x['timestamp'] or datetime.min, x['file_path'], x['line_number']), reverse=True)
+        
+        return results
+    
+    def get_nested_field(self, obj, field_path):
+        """Get nested field value using dot notation (e.g., 'attr.remote', 'command.find')"""
+        if not field_path:
+            return None
+            
+        parts = field_path.split('.')
+        current = obj
+        
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        
+        return current
+    
+    def get_original_log_line(self, file_path, line_number):
+        """Get the original raw log line using file path and line number"""
+        if file_path in self.raw_log_data and line_number:
+            raw_lines = self.raw_log_data[file_path]
+            # line_number is 1-based, but array is 0-based
+            if 1 <= line_number <= len(raw_lines):
+                return raw_lines[line_number - 1]
+        return None
+    
+    def extract_timestamp_from_json(self, t_field):
+        """Extract timestamp from MongoDB JSON t field"""
+        if isinstance(t_field, dict) and '$date' in t_field:
+            try:
+                timestamp_str = t_field['$date']
+                return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            except:
+                pass
+        return None
     
     def get_parsing_summary_message(self):
         """Generate a human-readable parsing summary message"""
@@ -918,8 +1150,40 @@ def upload_file():
 
 @app.route('/dashboard')
 def dashboard():
-    stats = analyzer.get_connection_stats()
-    return render_template('dashboard_results.html', stats=stats)
+    # Get filter parameters
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    ip_filter = request.args.get('ip_filter', '').strip()
+    user_filter = request.args.get('user_filter', '').strip()
+    
+    # Parse date filters
+    start_date = None
+    end_date = None
+    if start_date_str:
+        try:
+            start_date = datetime.fromisoformat(start_date_str)
+        except ValueError:
+            pass
+    if end_date_str:
+        try:
+            end_date = datetime.fromisoformat(end_date_str)
+        except ValueError:
+            pass
+    
+    # Get stats with filters applied
+    stats = analyzer.get_connection_stats(
+        start_date=start_date,
+        end_date=end_date,
+        ip_filter=ip_filter,
+        user_filter=user_filter
+    )
+    
+    return render_template('dashboard_results.html', 
+                         stats=stats,
+                         start_date=start_date_str,
+                         end_date=end_date_str,
+                         ip_filter=ip_filter,
+                         user_filter=user_filter)
 
 @app.route('/api/stats')
 def api_stats():
@@ -928,7 +1192,8 @@ def api_stats():
 
 @app.route('/slow-queries')
 def slow_queries():
-    stats = analyzer.get_connection_stats()
+    # Ensure user correlation is done before filtering
+    analyzer.correlate_users_with_access()
     
     # Get unique databases for filtering
     databases = set()
@@ -939,13 +1204,41 @@ def slow_queries():
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    
+    # Parse date filters
+    start_date = None
+    end_date = None
+    if start_date_str:
+        try:
+            start_date = datetime.fromisoformat(start_date_str)
+        except ValueError:
+            pass
+    if end_date_str:
+        try:
+            end_date = datetime.fromisoformat(end_date_str)
+        except ValueError:
+            pass
     
     # Filter slow queries
     filtered_queries = []
     for query in analyzer.slow_queries:
-        if query['duration'] >= threshold:
-            if selected_db == 'all' or query.get('database') == selected_db:
-                filtered_queries.append(query)
+        # Duration filter
+        if query['duration'] < threshold:
+            continue
+        
+        # Database filter
+        if selected_db != 'all' and query.get('database') != selected_db:
+            continue
+            
+        # Date filters
+        if start_date and query['timestamp'] < start_date:
+            continue
+        if end_date and query['timestamp'] > end_date:
+            continue
+            
+        filtered_queries.append(query)
     
     # Sort by duration (descending)
     filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
@@ -955,46 +1248,222 @@ def slow_queries():
                          databases=sorted(databases),
                          selected_db=selected_db,
                          threshold=threshold,
+                         start_date=start_date_str,
+                         end_date=end_date_str,
                          total_queries=len(filtered_queries))
 
 @app.route('/export-slow-queries')
 def export_slow_queries():
+    # Ensure user correlation is done before filtering
+    analyzer.correlate_users_with_access()
+    
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    
+    # Parse date filters
+    start_date = None
+    end_date = None
+    if start_date_str:
+        try:
+            start_date = datetime.fromisoformat(start_date_str)
+        except ValueError:
+            pass
+    if end_date_str:
+        try:
+            end_date = datetime.fromisoformat(end_date_str)
+        except ValueError:
+            pass
     
     # Filter slow queries
     filtered_queries = []
     for query in analyzer.slow_queries:
-        if query['duration'] >= threshold:
-            if selected_db == 'all' or query.get('database') == selected_db:
-                filtered_queries.append(query)
+        # Duration filter
+        if query['duration'] < threshold:
+            continue
+        
+        # Database filter
+        if selected_db != 'all' and query.get('database') != selected_db:
+            continue
+            
+        # Date filters
+        if start_date and query['timestamp'] < start_date:
+            continue
+        if end_date and query['timestamp'] > end_date:
+            continue
+            
+        filtered_queries.append(query)
     
-    # Sort by timestamp
-    filtered_queries.sort(key=lambda x: x['timestamp'])
+    # Sort by duration (slowest first)
+    filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
     
-    # Generate export content
-    output = []
-    output.append(f"# MongoDB Slow Query Analysis Export")
-    output.append(f"# Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    output.append(f"# Database Filter: {selected_db}")
-    output.append(f"# Threshold: {threshold}ms")
-    output.append(f"# Total Queries: {len(filtered_queries)}")
-    output.append("")
-    
+    # Generate export content with original JSON entries
+    original_log_entries = []
     for query in filtered_queries:
-        # Reconstruct the original log line format
-        timestamp_str = query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0000'
-        output.append(f"{timestamp_str} I COMMAND  [conn{query['connection_id']}] {query['query']}")
+        # Get the original raw log line
+        original_line = analyzer.get_original_log_line(query.get('file_path'), query.get('line_number'))
+        if original_line:
+            try:
+                # Parse the original line to ensure it's valid JSON
+                original_json = json.loads(original_line)
+                original_log_entries.append(original_json)
+            except json.JSONDecodeError:
+                # Fallback to processed data if original line is invalid
+                original_log_entries.append({
+                    'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                    'connection_id': query['connection_id'],
+                    'duration_ms': query['duration'],
+                    'database': query['database'],
+                    'collection': query['collection'],
+                    'query': query['query'],
+                    'plan_summary': query.get('plan_summary', 'None'),
+                    'username': query.get('username', 'Unknown'),
+                    'note': 'Processed data - original log entry was malformed'
+                })
+        else:
+            # Fallback if we can't find the original line
+            original_log_entries.append({
+                'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                'connection_id': query['connection_id'],
+                'duration_ms': query['duration'],
+                'database': query['database'],
+                'collection': query['collection'],
+                'query': query['query'],
+                'plan_summary': query.get('plan_summary', 'None'),
+                'username': query.get('username', 'Unknown'),
+                'note': 'Processed data - original log entry not found'
+            })
     
-    # Create response
-    export_content = '\n'.join(output)
+    # Create JSON export with only original log entries
+    export_content = json.dumps(original_log_entries, indent=2, default=str)
     
     # Generate filename
     db_suffix = f"_{selected_db}" if selected_db != 'all' else "_all"
-    filename = f"mongodb_slow_queries{db_suffix}_{threshold}ms_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    filename = f"mongodb_slow_queries{db_suffix}_{threshold}ms_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
-    response = Response(export_content, mimetype='text/plain')
+    response = Response(export_content, mimetype='application/json')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    
+    return response
+
+@app.route('/search-logs')
+def search_logs():
+    # Get search parameters
+    keyword = request.args.get('keyword', '').strip()
+    field_name = request.args.get('field_name', '').strip()
+    field_value = request.args.get('field_value', '').strip()
+    use_regex = request.args.get('use_regex') == 'on'
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    limit = min(int(request.args.get('limit', 100)), 1000)  # Cap at 1000 results
+    
+    # Parse date filters
+    start_date = None
+    end_date = None
+    if start_date_str:
+        try:
+            start_date = datetime.fromisoformat(start_date_str)
+        except ValueError:
+            pass
+    if end_date_str:
+        try:
+            end_date = datetime.fromisoformat(end_date_str)
+        except ValueError:
+            pass
+    
+    # Perform search
+    results = []
+    search_performed = False
+    error_message = None
+    
+    if keyword or (field_name and field_value):
+        search_performed = True
+        try:
+            results = analyzer.search_logs(
+                keyword=keyword or None,
+                field_name=field_name or None,
+                field_value=field_value or None,
+                use_regex=use_regex,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit
+            )
+        except Exception as e:
+            error_message = f"Search error: {str(e)}"
+    
+    return render_template('search_logs.html',
+                         keyword=keyword,
+                         field_name=field_name,
+                         field_value=field_value,
+                         use_regex=use_regex,
+                         start_date=start_date_str,
+                         end_date=end_date_str,
+                         limit=limit,
+                         results=results,
+                         search_performed=search_performed,
+                         error_message=error_message,
+                         result_count=len(results))
+
+@app.route('/export-search-results')
+def export_search_results():
+    # Get the same search parameters
+    keyword = request.args.get('keyword', '').strip()
+    field_name = request.args.get('field_name', '').strip()
+    field_value = request.args.get('field_value', '').strip()
+    use_regex = request.args.get('use_regex') == 'on'
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    limit = min(int(request.args.get('limit', 1000)), 1000)
+    
+    # Parse date filters
+    start_date = None
+    end_date = None
+    if start_date_str:
+        try:
+            start_date = datetime.fromisoformat(start_date_str)
+        except ValueError:
+            pass
+    if end_date_str:
+        try:
+            end_date = datetime.fromisoformat(end_date_str)
+        except ValueError:
+            pass
+    
+    # Perform search
+    results = analyzer.search_logs(
+        keyword=keyword or None,
+        field_name=field_name or None,
+        field_value=field_value or None,
+        use_regex=use_regex,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit
+    )
+    
+    # Create export data with only original JSON entries
+    original_log_entries = []
+    
+    for result in results:
+        if result['parsed_json']:
+            original_log_entries.append(result['parsed_json'])
+        else:
+            # If parsing failed, try to parse the raw line again
+            try:
+                original_json = json.loads(result['raw_line'])
+                original_log_entries.append(original_json)
+            except json.JSONDecodeError:
+                # Skip invalid JSON entries
+                continue
+    
+    export_content = json.dumps(original_log_entries, indent=2, default=str)
+    
+    # Generate filename
+    search_term = keyword or f"{field_name}_{field_value}" or "search"
+    filename = f"mongodb_search_{search_term.replace(' ', '_').replace(':', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    response = Response(export_content, mimetype='application/json')
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
     
     return response

@@ -10,7 +10,53 @@
             <a href="{{ url_for('slow_queries') }}" class="btn btn-sm btn-warning">
                 <i class="fas fa-clock me-2"></i>Slow Query Analysis
             </a>
+            <a href="{{ url_for('search_logs') }}" class="btn btn-sm btn-info">
+                <i class="fas fa-search me-2"></i>Search Logs
+            </a>
             <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Upload New Log</a>
+        </div>
+    </div>
+</div>
+
+<!-- Filter Controls -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-filter me-2"></i>Filter Options</h5>
+            </div>
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('dashboard') }}" class="row g-3">
+                    <div class="col-md-3">
+                        <label for="start_date" class="form-label">Start Date</label>
+                        <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
+                               value="{{ start_date or '' }}">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="end_date" class="form-label">End Date</label>
+                        <input type="datetime-local" class="form-control" id="end_date" name="end_date" 
+                               value="{{ end_date or '' }}">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="ip_filter" class="form-label">IP Address</label>
+                        <input type="text" class="form-control" id="ip_filter" name="ip_filter" 
+                               value="{{ ip_filter or '' }}" placeholder="192.168.1.100">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="user_filter" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="user_filter" name="user_filter" 
+                               value="{{ user_filter or '' }}" placeholder="admin">
+                    </div>
+                    <div class="col-md-12 d-flex align-items-end mt-2">
+                        <button type="submit" class="btn btn-primary me-2">
+                            <i class="fas fa-filter me-2"></i>Apply Filters
+                        </button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                            <i class="fas fa-undo me-2"></i>Reset
+                        </a>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 </div>

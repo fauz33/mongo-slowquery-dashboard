@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+
+{% block title %}Search Logs - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">Search MongoDB Logs</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            {% if search_performed and results %}
+            <button type="button" class="btn btn-sm btn-success" id="exportBtn">
+                <i class="fas fa-download me-2"></i>Export Results
+            </button>
+            {% endif %}
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Search Form -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-search me-2"></i>Search Criteria</h5>
+            </div>
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('search_logs') }}" class="row g-3">
+                    <!-- Keyword Search -->
+                    <div class="col-md-6">
+                        <label for="keyword" class="form-label">Keyword Search</label>
+                        <input type="text" class="form-control" id="keyword" name="keyword" 
+                               value="{{ keyword or '' }}" placeholder="Search entire log lines">
+                        <div class="form-text">Search for text anywhere in the log entries</div>
+                    </div>
+                    
+                    <!-- Field-specific Search -->
+                    <div class="col-md-3">
+                        <label for="field_name" class="form-label">Field Name</label>
+                        <input type="text" class="form-control" id="field_name" name="field_name" 
+                               value="{{ field_name or '' }}" placeholder="e.g., c, msg, ns">
+                        <div class="form-text">JSON field name (supports dot notation)</div>
+                    </div>
+                    
+                    <div class="col-md-3">
+                        <label for="field_value" class="form-label">Field Value</label>
+                        <input type="text" class="form-control" id="field_value" name="field_value" 
+                               value="{{ field_value or '' }}" placeholder="Value or pattern">
+                        <div class="form-text">Value to search for in the field</div>
+                    </div>
+                    
+                    <!-- Date Range -->
+                    <div class="col-md-4">
+                        <label for="start_date" class="form-label">Start Date</label>
+                        <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
+                               value="{{ start_date or '' }}">
+                    </div>
+                    
+                    <div class="col-md-4">
+                        <label for="end_date" class="form-label">End Date</label>
+                        <input type="datetime-local" class="form-control" id="end_date" name="end_date" 
+                               value="{{ end_date or '' }}">
+                    </div>
+                    
+                    <!-- Options -->
+                    <div class="col-md-2">
+                        <label for="limit" class="form-label">Max Results</label>
+                        <select class="form-select" id="limit" name="limit">
+                            <option value="50" {% if limit == 50 %}selected{% endif %}>50</option>
+                            <option value="100" {% if limit == 100 %}selected{% endif %}>100</option>
+                            <option value="250" {% if limit == 250 %}selected{% endif %}>250</option>
+                            <option value="500" {% if limit == 500 %}selected{% endif %}>500</option>
+                            <option value="1000" {% if limit == 1000 %}selected{% endif %}>1000</option>
+                        </select>
+                    </div>
+                    
+                    <div class="col-md-2">
+                        <label class="form-label">&nbsp;</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="use_regex" name="use_regex" 
+                                   {% if use_regex %}checked{% endif %}>
+                            <label class="form-check-label" for="use_regex">
+                                Use Regex
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="col-12">
+                        <button type="submit" class="btn btn-primary me-2">
+                            <i class="fas fa-search me-2"></i>Search
+                        </button>
+                        <a href="{{ url_for('search_logs') }}" class="btn btn-outline-secondary">
+                            <i class="fas fa-undo me-2"></i>Clear
+                        </a>
+                    </div>
+                </form>
+                
+                <!-- Search Examples -->
+                <div class="mt-3">
+                    <small class="text-muted">
+                        <strong>Examples:</strong><br>
+                        • Keyword: <code>Authentication failed</code><br>
+                        • Field search: <code>c</code> = <code>COMMAND</code><br>
+                        • Regex: <code>ns</code> = <code>dashboard.*</code><br>
+                        • Nested field: <code>attr.remote</code> = <code>10.244.*</code>
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Results -->
+{% if error_message %}
+<div class="alert alert-danger" role="alert">
+    <i class="fas fa-exclamation-triangle me-2"></i>{{ error_message }}
+</div>
+{% endif %}
+
+{% if search_performed %}
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-list me-2"></i>Search Results
+                    <span class="badge bg-primary">{{ result_count }}</span>
+                </h5>
+                {% if results %}
+                <small class="text-muted">
+                    {% if result_count >= limit %}Showing first {{ limit }} results{% else %}{{ result_count }} results found{% endif %}
+                </small>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if results %}
+                    <div class="table-responsive" style="overflow-x: auto;">
+                        <table class="table table-bordered table-hover">
+                            <thead class="table-primary">
+                                <tr>
+                                    <th style="min-width: 80px; color: #000; font-weight: bold;">#</th>
+                                    <th style="min-width: 120px; color: #000; font-weight: bold;">File</th>
+                                    <th style="min-width: 80px; color: #000; font-weight: bold;">Line</th>
+                                    <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
+                                    <th style="min-width: 600px; color: #000; font-weight: bold;">Log Entry</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for result in results %}
+                                <tr>
+                                    <td class="text-center">{{ loop.index }}</td>
+                                    <td>
+                                        <small class="text-muted">{{ result.file_path.split('/')[-1] }}</small>
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="badge bg-secondary">{{ result.line_number }}</span>
+                                    </td>
+                                    <td>
+                                        {% if result.timestamp %}
+                                            <small>{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                        {% else %}
+                                            <small class="text-muted">N/A</small>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <div class="log-entry" style="font-family: monospace; font-size: 0.85em; 
+                                             max-height: 200px; overflow-y: auto; white-space: pre-wrap; 
+                                             word-break: break-all; background-color: #f8f9fa; padding: 8px; 
+                                             border-radius: 4px; border: 1px solid #dee2e6;">{{ result.raw_line }}</div>
+                                        <button class="btn btn-sm btn-outline-primary mt-2" 
+                                                data-bs-toggle="modal" 
+                                                data-bs-target="#logModal"
+                                                data-log-number="{{ loop.index }}"
+                                                data-file-path="{{ result.file_path }}"
+                                                data-line-number="{{ result.line_number }}"
+                                                data-timestamp="{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') if result.timestamp else 'N/A' }}"
+                                                data-log-entry="{{ result.raw_line|e }}">
+                                            <i class="fas fa-expand-alt me-1"></i>View Full
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-5">
+                        <div class="mb-3">
+                            <i class="fas fa-search fa-3x text-muted"></i>
+                        </div>
+                        <h4 class="text-muted">No Results Found</h4>
+                        <p class="text-muted">
+                            No log entries matched your search criteria. Try adjusting your search terms or filters.
+                        </p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% elif not search_performed %}
+<div class="row">
+    <div class="col-12">
+        <div class="alert alert-info" role="alert">
+            <h4 class="alert-heading">Search MongoDB Logs</h4>
+            <p>Use the search form above to find specific log entries. You can search by:</p>
+            <ul>
+                <li><strong>Keywords:</strong> Search for text anywhere in log entries</li>
+                <li><strong>Field-specific:</strong> Search within specific JSON fields</li>
+                <li><strong>Regex patterns:</strong> Use regular expressions for complex matching</li>
+                <li><strong>Date ranges:</strong> Filter results by timestamp</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Full Log Entry Modal -->
+<div class="modal fade" id="logModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Log Entry Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row mb-3">
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">Entry #</label>
+                        <p id="modalLogNumber" class="mb-0"></p>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">File</label>
+                        <p id="modalFilePath" class="mb-0"></p>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">Line</label>
+                        <p id="modalLineNumber" class="mb-0"></p>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">Timestamp</label>
+                        <p id="modalTimestamp" class="mb-0"></p>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Full Log Entry</label>
+                    <pre id="fullLogEntry" class="bg-light p-3 rounded" 
+                         style="white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; 
+                                font-family: monospace; font-size: 0.9em;"></pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="copyLogEntry()">
+                    <i class="fas fa-copy me-2"></i>Copy Entry
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Modal functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const logModal = document.getElementById('logModal');
+    
+    if (logModal) {
+        logModal.addEventListener('show.bs.modal', function(event) {
+            const button = event.relatedTarget;
+            
+            const logNumber = button.getAttribute('data-log-number');
+            const filePath = button.getAttribute('data-file-path');
+            const lineNumber = button.getAttribute('data-line-number');
+            const timestamp = button.getAttribute('data-timestamp');
+            const logEntry = button.getAttribute('data-log-entry');
+            
+            document.getElementById('modalLogNumber').textContent = logNumber;
+            document.getElementById('modalFilePath').textContent = filePath.split('/').pop();
+            document.getElementById('modalLineNumber').textContent = lineNumber;
+            document.getElementById('modalTimestamp').textContent = timestamp;
+            document.getElementById('fullLogEntry').textContent = logEntry;
+        });
+    }
+    
+    // Export functionality
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function() {
+            const params = new URLSearchParams(window.location.search);
+            const exportUrl = '{{ url_for("export_search_results") }}?' + params.toString();
+            window.open(exportUrl, '_blank');
+        });
+    }
+});
+
+// Copy function
+function copyLogEntry() {
+    const logText = document.getElementById('fullLogEntry').textContent;
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(logText).then(function() {
+            const btn = document.querySelector('.modal-footer .btn-primary');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-primary');
+            }, 2000);
+        }).catch(function(err) {
+            console.error('Copy failed:', err);
+            alert('Copy failed. Please select and copy manually.');
+        });
+    } else {
+        // Fallback: select text for manual copy
+        const logElement = document.getElementById('fullLogEntry');
+        const range = document.createRange();
+        range.selectNodeContents(logElement);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        
+        alert('Text selected. Please press Ctrl+C (Cmd+C on Mac) to copy.');
+    }
+}
+
+// Form validation and examples
+document.addEventListener('DOMContentLoaded', function() {
+    const keywordInput = document.getElementById('keyword');
+    const fieldNameInput = document.getElementById('field_name');
+    const fieldValueInput = document.getElementById('field_value');
+    
+    // Show/hide field inputs based on usage
+    function updateFormState() {
+        if (keywordInput.value.trim()) {
+            fieldNameInput.parentElement.style.opacity = '0.7';
+            fieldValueInput.parentElement.style.opacity = '0.7';
+        } else {
+            fieldNameInput.parentElement.style.opacity = '1';
+            fieldValueInput.parentElement.style.opacity = '1';
+        }
+    }
+    
+    keywordInput.addEventListener('input', updateFormState);
+    fieldNameInput.addEventListener('input', updateFormState);
+    fieldValueInput.addEventListener('input', updateFormState);
+    
+    updateFormState();
+});
+</script>
+
+{% endblock %}
