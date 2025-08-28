@@ -1,6 +1,30 @@
+# Core Flask framework and extensions
 Flask==2.3.3
-Flask-Admin==1.6.1
 Werkzeug==2.3.7
 Jinja2==3.1.2
+
+# Data processing and analysis
 pandas==2.0.3
 python-dateutil==2.8.2
+
+# Standard library modules (included with Python, listed for documentation)
+# os - File system operations
+# re - Regular expressions  
+# json - JSON parsing and generation
+# hashlib - Hash generation for query fingerprinting
+# datetime - Date and time handling
+# collections - defaultdict, Counter for data aggregation
+# tempfile - Temporary file handling
+# io - Input/output operations
+# zipfile - ZIP file handling for log uploads
+# tarfile - TAR file handling for log uploads  
+# gzip - GZIP file handling for log uploads
+# shutil - High-level file operations
+
+# Optional: For production deployment
+# gunicorn==21.2.0
+# uWSGI==2.0.21
+
+# Optional: For enhanced logging and monitoring
+# flask-cors==4.0.0
+# python-dotenv==1.0.0

@@ -1,0 +1,641 @@
+{% extends "base.html" %}
+
+{% block title %}CurrentOp Analyzer - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">MongoDB CurrentOp Analyzer</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            {% if analysis and not analysis.get('error') %}
+            <button type="button" class="btn btn-sm btn-success" id="exportBtn">
+                <i class="fas fa-download me-2"></i>Export Analysis
+            </button>
+            {% endif %}
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Input Form -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-terminal me-2"></i>Input db.currentOp() Output</h5>
+            </div>
+            <div class="card-body">
+                <!-- Input Method Tabs -->
+                <ul class="nav nav-tabs mb-3" id="inputTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="paste-tab" data-bs-toggle="tab" data-bs-target="#paste-content" 
+                                type="button" role="tab" aria-controls="paste-content" aria-selected="true">
+                            <i class="fas fa-paste me-2"></i>Paste Text
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="upload-tab" data-bs-toggle="tab" data-bs-target="#upload-content" 
+                                type="button" role="tab" aria-controls="upload-content" aria-selected="false">
+                            <i class="fas fa-upload me-2"></i>Upload File
+                        </button>
+                    </li>
+                </ul>
+                
+                <div class="tab-content" id="inputTabsContent">
+                    <!-- Paste Tab -->
+                    <div class="tab-pane fade show active" id="paste-content" role="tabpanel" aria-labelledby="paste-tab">
+                        <form method="POST" action="{{ url_for('current_op_analyzer') }}" id="pasteForm">
+                            <div class="mb-3">
+                                <label for="current_op_data" class="form-label">CurrentOp Data</label>
+                                <textarea class="form-control" id="current_op_data" name="current_op_data" 
+                                          rows="8" placeholder="Paste your db.currentOp() output here...">{{ original_data or '' }}</textarea>
+                                <div class="form-text">
+                                    Supported formats: 
+                                    <code>db.currentOp()</code> output, 
+                                    <code>{"inprog": [...]}}</code>, or 
+                                    plain JSON array <code>[...]</code>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <button type="submit" class="btn btn-primary me-2">
+                                    <i class="fas fa-chart-line me-2"></i>Analyze Operations
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary" onclick="clearForm()">
+                                    <i class="fas fa-eraser me-2"></i>Clear
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    
+                    <!-- Upload Tab -->
+                    <div class="tab-pane fade" id="upload-content" role="tabpanel" aria-labelledby="upload-tab">
+                        <form method="POST" action="{{ url_for('current_op_analyzer') }}" enctype="multipart/form-data" id="uploadForm">
+                            <div class="mb-3">
+                                <label for="currentop_file" class="form-label">Upload CurrentOp File</label>
+                                <input type="file" class="form-control" id="currentop_file" name="currentop_file" 
+                                       accept=".txt,.json,.log">
+                                <div class="form-text">
+                                    Upload a text file containing db.currentOp() output (supported: .txt, .json, .log)
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <button type="submit" class="btn btn-primary me-2">
+                                    <i class="fas fa-upload me-2"></i>Upload and Analyze
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary" onclick="clearUpload()">
+                                    <i class="fas fa-eraser me-2"></i>Clear
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                
+                <!-- Usage Examples -->
+                <div class="mt-4 pt-3 border-top">
+                    <h6><i class="fas fa-info-circle me-2"></i>Usage Examples:</h6>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6 class="text-primary">Paste Method:</h6>
+                            <small class="text-muted">
+                                1. Run <code>db.currentOp()</code> in MongoDB shell<br>
+                                2. Copy the entire output<br>
+                                3. Paste in the text area above<br>
+                                4. Click "Analyze Operations"
+                            </small>
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="text-primary">Upload Method:</h6>
+                            <small class="text-muted">
+                                1. Save currentOp output to a file:<br>
+                                &nbsp;&nbsp;<code>db.currentOp() > currentop.json</code><br>
+                                2. Upload the file using the upload tab<br>
+                                3. Click "Upload and Analyze"
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <h6 class="text-success">Sample Commands:</h6>
+                        <div class="bg-light p-2 rounded">
+                            <code>
+                                // All operations<br>
+                                db.currentOp()<br><br>
+                                // Only active operations<br>
+                                db.currentOp({"active": true})<br><br>
+                                // Long running operations<br>
+                                db.currentOp({"secs_running": {"$gte": 30}})
+                            </code>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if analysis %}
+    {% if analysis.get('error') %}
+    <!-- Error Display -->
+    <div class="alert alert-danger" role="alert">
+        <h4 class="alert-heading">Analysis Error</h4>
+        <p>{{ analysis.error }}</p>
+        <hr>
+        <p class="mb-0">Please check your input format and try again.</p>
+    </div>
+    {% else %}
+    
+    <!-- Summary Statistics -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card card-stats border-left-primary">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Total Operations</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">{{ analysis.total_operations }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <div class="stats-icon bg-primary text-white">
+                                <i class="fas fa-cogs"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-3">
+            <div class="card card-stats border-left-warning">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Long Running</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">{{ analysis.long_running_ops|length }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <div class="stats-icon bg-warning text-white">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-3">
+            <div class="card card-stats border-left-danger">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">Collection Scans</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">{{ analysis.query_analysis.collscans|length }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <div class="stats-icon bg-danger text-white">
+                                <i class="fas fa-exclamation-triangle"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-3">
+            <div class="card card-stats border-left-info">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Avg Duration</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">
+                                {{ "%.1f"|format(analysis.performance_metrics.avg_duration) }}s
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <div class="stats-icon bg-info text-white">
+                                <i class="fas fa-stopwatch"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recommendations -->
+    {% if analysis.recommendations %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-lightbulb me-2"></i>Recommendations</h5>
+                </div>
+                <div class="card-body">
+                    {% for rec in analysis.recommendations %}
+                    <div class="alert 
+                        {% if rec.type == 'error' %}alert-danger{% elif rec.type == 'warning' %}alert-warning{% else %}alert-info{% endif %} 
+                        mb-3" role="alert">
+                        <div class="d-flex align-items-start">
+                            <div class="me-3 mt-1">
+                                {% if rec.priority == 'high' %}
+                                <i class="fas fa-exclamation-circle fa-lg text-danger"></i>
+                                {% elif rec.priority == 'medium' %}
+                                <i class="fas fa-exclamation-triangle fa-lg text-warning"></i>
+                                {% else %}
+                                <i class="fas fa-info-circle fa-lg text-info"></i>
+                                {% endif %}
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="mb-1">{{ rec.title }}</h6>
+                                <p class="mb-1">{{ rec.description }}</p>
+                                <small><strong>Action:</strong> {{ rec.action }}</small>
+                                <span class="badge 
+                                    {% if rec.priority == 'high' %}bg-danger{% elif rec.priority == 'medium' %}bg-warning{% else %}bg-info{% endif %} 
+                                    ms-2">{{ rec.priority|title }} Priority</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Operation Types and States -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-chart-pie me-2"></i>Operation Types</h5>
+                </div>
+                <div class="card-body">
+                    {% if analysis.operation_types %}
+                        {% for op_type, count in analysis.operation_types.most_common() %}
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge bg-primary">{{ op_type }}</span>
+                            <span class="fw-bold">{{ count }}</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="text-muted">No operation type data available</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-chart-bar me-2"></i>Operation States</h5>
+                </div>
+                <div class="card-body">
+                    {% if analysis.operation_states %}
+                        {% for state, count in analysis.operation_states.most_common() %}
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge 
+                                {% if state == 'active' %}bg-success{% elif state == 'waiting_for_lock' %}bg-warning{% else %}bg-secondary{% endif %}">
+                                {{ state|replace('_', ' ')|title }}
+                            </span>
+                            <span class="fw-bold">{{ count }}</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="text-muted">No operation state data available</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Long Running Operations -->
+    {% if analysis.long_running_ops %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-hourglass-half me-2"></i>Long Running Operations (>30s)</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>OpID</th>
+                                    <th>Type</th>
+                                    <th>Duration</th>
+                                    <th>Namespace</th>
+                                    <th>Client</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for op in analysis.long_running_ops %}
+                                <tr>
+                                    <td><code>{{ op.opid }}</code></td>
+                                    <td><span class="badge bg-warning">{{ op.op }}</span></td>
+                                    <td><strong>{{ "%.1f"|format(op.duration) }}s</strong></td>
+                                    <td>{{ op.ns }}</td>
+                                    <td><small>{{ op.client }}</small></td>
+                                    <td><small>{{ op.desc[:100] }}{% if op.desc|length > 100 %}...{% endif %}</small></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Collection Scans -->
+    {% if analysis.query_analysis.collscans %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-search me-2 text-danger"></i>Collection Scans (No Index Used)</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>OpID</th>
+                                    <th>Namespace</th>
+                                    <th>Duration</th>
+                                    <th>Command</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for scan in analysis.query_analysis.collscans %}
+                                <tr>
+                                    <td><code>{{ scan.opid }}</code></td>
+                                    <td><span class="badge bg-danger">{{ scan.ns }}</span></td>
+                                    <td>{{ "%.1f"|format(scan.duration) }}s</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" 
+                                                data-bs-toggle="modal" 
+                                                data-bs-target="#commandModal"
+                                                data-command="{{ scan.command|e }}">
+                                            View Command
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Lock Analysis -->
+    {% if analysis.lock_analysis.waiting_operations or analysis.lock_analysis.read_locks or analysis.lock_analysis.write_locks %}
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h6><i class="fas fa-lock me-2 text-warning"></i>Waiting for Locks</h6>
+                </div>
+                <div class="card-body">
+                    {% if analysis.lock_analysis.waiting_operations %}
+                        {% for op in analysis.lock_analysis.waiting_operations %}
+                        <div class="mb-2">
+                            <div><strong>{{ op.ns }}</strong></div>
+                            <small class="text-muted">OpID: {{ op.opid }} | {{ op.op }} | {{ "%.1f"|format(op.duration) }}s</small>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="text-muted mb-0">No operations waiting</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h6><i class="fas fa-eye me-2 text-info"></i>Read Locks</h6>
+                </div>
+                <div class="card-body">
+                    {% if analysis.lock_analysis.read_locks %}
+                        {% for lock in analysis.lock_analysis.read_locks[:5] %}
+                        <div class="mb-1">
+                            <small><strong>{{ lock.ns }}</strong> ({{ lock.type }})</small>
+                        </div>
+                        {% endfor %}
+                        {% if analysis.lock_analysis.read_locks|length > 5 %}
+                        <small class="text-muted">... and {{ analysis.lock_analysis.read_locks|length - 5 }} more</small>
+                        {% endif %}
+                    {% else %}
+                        <p class="text-muted mb-0">No read locks</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h6><i class="fas fa-pen me-2 text-danger"></i>Write Locks</h6>
+                </div>
+                <div class="card-body">
+                    {% if analysis.lock_analysis.write_locks %}
+                        {% for lock in analysis.lock_analysis.write_locks[:5] %}
+                        <div class="mb-1">
+                            <small><strong>{{ lock.ns }}</strong> ({{ lock.type }})</small>
+                        </div>
+                        {% endfor %}
+                        {% if analysis.lock_analysis.write_locks|length > 5 %}
+                        <small class="text-muted">... and {{ analysis.lock_analysis.write_locks|length - 5 }} more</small>
+                        {% endif %}
+                    {% else %}
+                        <p class="text-muted mb-0">No write locks</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Hotspots -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-fire me-2"></i>Collection Hotspots</h5>
+                </div>
+                <div class="card-body">
+                    {% if analysis.collection_hotspots %}
+                        {% for collection, count in analysis.collection_hotspots.most_common(10) %}
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge bg-info">{{ collection }}</span>
+                            <span class="fw-bold">{{ count }} ops</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="text-muted">No collection activity data</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-network-wired me-2"></i>Client Connections</h5>
+                </div>
+                <div class="card-body">
+                    {% if analysis.client_connections %}
+                        {% for client, count in analysis.client_connections.most_common(10) %}
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge bg-secondary">{{ client }}</span>
+                            <span class="fw-bold">{{ count }} ops</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="text-muted">No client connection data</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Duplicate Queries -->
+    {% if analysis.query_analysis.duplicate_queries %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-clone me-2"></i>Duplicate Query Patterns</h5>
+                </div>
+                <div class="card-body">
+                    {% for dup in analysis.query_analysis.duplicate_queries %}
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="badge bg-warning">{{ dup.count }} concurrent executions</span>
+                                <small class="text-muted">Pattern: {{ dup.query_pattern }}</small>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                {% for op in dup.operations %}
+                                <div class="col-md-4 mb-2">
+                                    <div class="border p-2 rounded">
+                                        <small>
+                                            <strong>OpID:</strong> {{ op.opid }}<br>
+                                            <strong>NS:</strong> {{ op.ns }}<br>
+                                            <strong>Duration:</strong> {{ "%.1f"|format(op.duration) }}s
+                                        </small>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% endif %}
+{% endif %}
+
+<!-- Command Modal -->
+<div class="modal fade" id="commandModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Operation Command</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="commandContent" class="bg-light p-3 rounded" style="max-height: 400px; overflow-y: auto;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="copyCommand()">
+                    <i class="fas fa-copy me-2"></i>Copy Command
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function clearForm() {
+    document.getElementById('current_op_data').value = '';
+}
+
+function clearUpload() {
+    document.getElementById('currentop_file').value = '';
+}
+
+// Modal functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const commandModal = document.getElementById('commandModal');
+    
+    if (commandModal) {
+        commandModal.addEventListener('show.bs.modal', function(event) {
+            const button = event.relatedTarget;
+            const command = button.getAttribute('data-command');
+            document.getElementById('commandContent').textContent = command;
+        });
+    }
+    
+    // Export functionality
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function() {
+            const analysisData = {{ analysis|tojson if analysis else '{}' }};
+            const exportContent = JSON.stringify(analysisData, null, 2);
+            const blob = new Blob([exportContent], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `currentop_analysis_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    }
+});
+
+function copyCommand() {
+    const commandText = document.getElementById('commandContent').textContent;
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(commandText).then(function() {
+            const btn = document.querySelector('#commandModal .btn-primary');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-primary');
+            }, 2000);
+        }).catch(function(err) {
+            console.error('Copy failed:', err);
+            alert('Copy failed. Please select and copy manually.');
+        });
+    } else {
+        alert('Copy functionality not supported in this browser.');
+    }
+}
+</script>
+
+{% endblock %}

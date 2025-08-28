@@ -3,6 +3,7 @@ from werkzeug.utils import secure_filename
 import os
 import re
 import json
+import hashlib
 from datetime import datetime
 import pandas as pd
 from collections import defaultdict, Counter
@@ -432,7 +433,12 @@ class MongoLogAnalyzer:
                         'query_hash': query_hash,
                         'username': None,  # Will be filled by correlation
                         'file_path': filepath,
-                        'line_number': line_num
+                        'line_number': line_num,
+                        # Extract performance metrics if available
+                        'docsExamined': attr.get('docsExamined', 0),
+                        'keysExamined': attr.get('keysExamined', 0),
+                        'nReturned': attr.get('nReturned', 0),
+                        'planCacheKey': attr.get('planCacheKey', '')
                     })
                     self.parsing_summary['slow_query_events'] += 1
                     if file_summary:
@@ -511,7 +517,12 @@ class MongoLogAnalyzer:
                             'query_hash': query_hash,
                             'username': None,  # Will be filled by correlation
                             'file_path': filepath,
-                            'line_number': line_num
+                            'line_number': line_num,
+                            # Extract performance metrics if available
+                            'docsExamined': attr.get('docsExamined', 0),
+                            'keysExamined': attr.get('keysExamined', 0),
+                            'nReturned': attr.get('nReturned', 0),
+                            'planCacheKey': attr.get('planCacheKey', '')
                         })
                         
                         self.database_access.append({
@@ -994,6 +1005,85 @@ class MongoLogAnalyzer:
                 return raw_lines[line_number - 1]
         return None
     
+    def get_available_date_range(self):
+        """Get the date range from all parsed log entries"""
+        if not self.slow_queries:
+            return None, None
+        
+        # Get all timestamps from slow queries
+        timestamps = [query['timestamp'] for query in self.slow_queries if query.get('timestamp')]
+        
+        # Also include timestamps from connections and other events
+        for conn in self.connections:
+            if conn.get('timestamp'):
+                timestamps.append(conn['timestamp'])
+        
+        for auth in self.authentications:
+            if auth.get('timestamp'):
+                timestamps.append(auth['timestamp'])
+        
+        if not timestamps:
+            return None, None
+        
+        min_date = min(timestamps)
+        max_date = max(timestamps)
+        
+        return min_date, max_date
+    
+    def _group_queries_by_pattern(self, queries):
+        """Group queries by pattern for unique queries view"""
+        patterns = defaultdict(lambda: {
+            'executions': [],
+            'total_count': 0,
+            'durations': [],
+            'query_hash': '',
+            'database': '',
+            'collection': '',
+            'plan_summary': '',
+            'first_seen': None,
+            'last_seen': None,
+            'sample_query': ''
+        })
+        
+        for query in queries:
+            # Create pattern key
+            query_hash = query.get('query_hash', 'unknown')
+            pattern_key = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}_{query_hash}_{query.get('plan_summary', 'None')}"
+            
+            pattern = patterns[pattern_key]
+            
+            # Initialize pattern data on first occurrence
+            if pattern['total_count'] == 0:
+                pattern['query_hash'] = query_hash
+                pattern['database'] = query.get('database', 'unknown')
+                pattern['collection'] = query.get('collection', 'unknown')
+                pattern['plan_summary'] = query.get('plan_summary', 'None')
+                pattern['sample_query'] = query.get('query', '')[:200] + ('...' if len(query.get('query', '')) > 200 else '')
+                pattern['first_seen'] = query.get('timestamp')
+            
+            # Add execution data
+            pattern['executions'].append(query)
+            pattern['durations'].append(query.get('duration', 0))
+            pattern['total_count'] += 1
+            pattern['last_seen'] = query.get('timestamp')
+        
+        # Convert to list and calculate aggregated stats
+        unique_patterns = []
+        for pattern_key, pattern in patterns.items():
+            durations = pattern['durations']
+            pattern.update({
+                'avg_duration': sum(durations) / len(durations) if durations else 0,
+                'min_duration': min(durations) if durations else 0,
+                'max_duration': max(durations) if durations else 0,
+                'duration_range': f"{min(durations)}ms-{max(durations)}ms" if durations else "N/A"
+            })
+            unique_patterns.append(pattern)
+        
+        # Sort by average duration (descending)
+        unique_patterns.sort(key=lambda x: x['avg_duration'], reverse=True)
+        
+        return unique_patterns
+    
     def extract_timestamp_from_json(self, t_field):
         """Extract timestamp from MongoDB JSON t field"""
         if isinstance(t_field, dict) and '$date' in t_field:
@@ -1284,15 +1374,21 @@ class MongoLogAnalyzer:
         for query in self.slow_queries:
             query_hash = self._extract_query_hash(query)
             if not query_hash:
-                # Use a combination of database, collection, and query as fallback
-                query_str = query.get('query', '')[:50]  # First 50 chars of query
-                query_hash = f"fallback_{query.get('database', 'unknown')}_{query.get('collection', 'unknown')}_{hash(query_str) % 10000}"
+                # Use synthetic hash generation for consistent uniqueness
+                query_hash = self._generate_synthetic_query_hash(query)
                 
             pattern_key = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}_{query_hash}_{query.get('plan_summary', 'None')}"
             pattern = patterns[pattern_key]
             
             # Get detailed metrics from original log line
             metrics = self._extract_detailed_metrics(query)
+            
+            # Check if metrics are estimated (when docsExamined/nReturned weren't in original log)
+            is_estimated = (
+                not query.get('docsExamined', 0) and 
+                not query.get('nReturned', 0) and 
+                metrics.get('docsExamined', 0) > 0
+            )
             
             # Initialize pattern metadata if first occurrence
             if pattern['total_count'] == 0:
@@ -1305,6 +1401,7 @@ class MongoLogAnalyzer:
                 pattern['sample_query'] = query.get('query', '')[:200] + ('...' if len(query.get('query', '')) > 200 else '')
                 pattern['first_seen'] = query.get('timestamp')
                 pattern['complexity_score'] = self._calculate_complexity_score(query.get('query', ''))
+                pattern['is_estimated'] = is_estimated
             
             # Add execution data
             execution = {
@@ -1372,26 +1469,228 @@ class MongoLogAnalyzer:
             pass
         return None  # Return None to trigger fallback hash generation
     
+    def _generate_synthetic_query_hash(self, query):
+        """Generate a synthetic query hash for queries without queryHash"""
+        try:
+            # Create a normalized version of the query for hashing
+            query_text = query.get('query', '')
+            database = query.get('database', 'unknown')
+            collection = query.get('collection', 'unknown')
+            
+            # Try to parse the query if it's JSON to normalize it
+            try:
+                if query_text.startswith('{'):
+                    # Parse and extract key query components
+                    query_obj = json.loads(query_text)
+                    
+                    # For complex queries, extract key components for uniqueness
+                    normalized_parts = []
+                    
+                    # Add database.collection
+                    normalized_parts.append(f"{database}.{collection}")
+                    
+                    # Extract operation type from command structure
+                    if isinstance(query_obj, dict):
+                        # Get the main operation (find, aggregate, update, etc.)
+                        for key in ['find', 'aggregate', 'update', 'delete', 'insert', 'command']:
+                            if key in query_obj:
+                                normalized_parts.append(f"op:{key}")
+                                break
+                        
+                        # Extract filter/match conditions (without values)
+                        if 'filter' in query_obj:
+                            filter_keys = self._extract_query_structure(query_obj['filter'])
+                            if filter_keys:
+                                normalized_parts.append(f"filter:{','.join(sorted(filter_keys))}")
+                        
+                        # Extract pipeline structure for aggregation
+                        if 'pipeline' in query_obj and isinstance(query_obj['pipeline'], list):
+                            pipeline_ops = []
+                            for stage in query_obj['pipeline']:
+                                if isinstance(stage, dict):
+                                    for op in stage.keys():
+                                        if op.startswith('$'):
+                                            pipeline_ops.append(op)
+                            if pipeline_ops:
+                                normalized_parts.append(f"pipeline:{','.join(pipeline_ops)}")
+                    
+                    # Create normalized query string
+                    normalized_query = '|'.join(normalized_parts)
+                else:
+                    # For text-based queries, extract pattern
+                    normalized_query = f"{database}.{collection}|{self._normalize_text_query(query_text)}"
+            
+            except (json.JSONDecodeError, Exception):
+                # Fallback for unparseable queries
+                normalized_query = f"{database}.{collection}|{self._normalize_text_query(query_text)}"
+            
+            # Generate hash from normalized query
+            return hashlib.md5(normalized_query.encode('utf-8')).hexdigest()
+            
+        except Exception:
+            # Ultimate fallback - hash the raw query
+            fallback_key = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}|{query.get('query', '')[:100]}"
+            return hashlib.md5(fallback_key.encode('utf-8')).hexdigest()
+    
+    def _extract_query_structure(self, filter_obj, max_depth=2, current_depth=0):
+        """Extract field names from query filter for structure matching"""
+        if current_depth >= max_depth or not isinstance(filter_obj, dict):
+            return set()
+        
+        field_names = set()
+        for key, value in filter_obj.items():
+            if not key.startswith('$'):  # Field name
+                field_names.add(key)
+            elif isinstance(value, dict):
+                field_names.update(self._extract_query_structure(value, max_depth, current_depth + 1))
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        field_names.update(self._extract_query_structure(item, max_depth, current_depth + 1))
+        
+        return field_names
+    
+    def _normalize_text_query(self, query_text):
+        """Normalize text-based query for pattern matching"""
+        # Extract operation pattern from text queries
+        if 'command' in query_text.lower():
+            # Extract command type
+            command_match = re.search(r'command\s+(\w+)', query_text, re.IGNORECASE)
+            if command_match:
+                return f"command:{command_match.group(1)}"
+        
+        if 'slow query' in query_text.lower():
+            return "slow_query"
+        
+        # Return first 50 chars as fallback pattern
+        return re.sub(r'\s+', ' ', query_text[:50]).strip()
+    
     def _extract_detailed_metrics(self, query):
-        """Extract detailed metrics from original log line"""
+        """Extract detailed metrics from original log line or parsed data"""
+        # First check if metrics are already available in the query object
+        if 'docsExamined' in query or 'nReturned' in query or 'keysExamined' in query:
+            return {
+                'docsExamined': query.get('docsExamined', 0),
+                'keysExamined': query.get('keysExamined', 0), 
+                'nReturned': query.get('nReturned', 0),
+                'cpuNanos': query.get('cpuNanos', 0),
+                'planCacheKey': query.get('planCacheKey', ''),
+                'queryFramework': query.get('queryFramework', ''),
+                'readConcern': query.get('readConcern', {}),
+                'writeConcern': query.get('writeConcern', {})
+            }
+        
+        # Try to extract from original log line
         try:
             original_line = self.get_original_log_line(query.get('file_path'), query.get('line_number'))
             if original_line:
                 original_json = json.loads(original_line)
                 attr = original_json.get('attr', {})
+                
+                # Extract metrics with multiple possible field names
+                docs_examined = (
+                    attr.get('docsExamined') or 
+                    attr.get('totalDocsExamined') or 
+                    attr.get('executionStats', {}).get('docsExamined') or 0
+                )
+                
+                keys_examined = (
+                    attr.get('keysExamined') or 
+                    attr.get('totalKeysExamined') or 
+                    attr.get('executionStats', {}).get('keysExamined') or 0
+                )
+                
+                n_returned = (
+                    attr.get('nReturned') or 
+                    attr.get('nreturned') or 
+                    attr.get('numReturned') or 
+                    attr.get('executionStats', {}).get('nReturned') or 0
+                )
+                
                 return {
-                    'docsExamined': attr.get('docsExamined', 0),
-                    'keysExamined': attr.get('keysExamined', 0),
-                    'nReturned': attr.get('nReturned', 0),
+                    'docsExamined': docs_examined,
+                    'keysExamined': keys_examined,
+                    'nReturned': n_returned,
                     'cpuNanos': attr.get('cpuNanos', 0),
                     'planCacheKey': attr.get('planCacheKey', ''),
                     'queryFramework': attr.get('queryFramework', ''),
                     'readConcern': attr.get('readConcern', {}),
                     'writeConcern': attr.get('writeConcern', {})
                 }
-        except:
+        except Exception as e:
+            # For debugging: log what went wrong
             pass
-        return {}
+        
+        # Try to estimate metrics from query structure for legacy logs
+        return self._estimate_metrics_from_query(query)
+    
+    def _estimate_metrics_from_query(self, query):
+        """Estimate basic metrics for queries without detailed performance data"""
+        # For COLLSCAN queries, we can estimate that many docs were examined
+        plan_summary = query.get('plan_summary', 'None')
+        duration = query.get('duration', 0)
+        
+        if plan_summary == 'COLLSCAN':
+            # Estimate based on duration - longer queries likely examined more docs
+            if duration > 5000:  # >5 seconds
+                estimated_docs = 50000
+            elif duration > 1000:  # >1 second  
+                estimated_docs = 10000
+            elif duration > 500:  # >500ms
+                estimated_docs = 5000
+            else:
+                estimated_docs = 1000
+            
+            # Assume low selectivity for COLLSCAN
+            estimated_returned = max(1, int(estimated_docs * 0.1))  # 10% selectivity
+            
+            return {
+                'docsExamined': estimated_docs,
+                'keysExamined': 0,  # COLLSCAN doesn't use keys
+                'nReturned': estimated_returned,
+                'cpuNanos': 0,
+                'planCacheKey': '',
+                'queryFramework': '',
+                'readConcern': {},
+                'writeConcern': {}
+            }
+            
+        elif 'IXSCAN' in plan_summary:
+            # For index scans, assume better selectivity
+            if duration > 1000:
+                estimated_keys = 2000
+                estimated_docs = 1000
+            elif duration > 200:
+                estimated_keys = 500
+                estimated_docs = 300
+            else:
+                estimated_keys = 100
+                estimated_docs = 50
+            
+            estimated_returned = max(1, int(estimated_docs * 0.5))  # 50% selectivity
+            
+            return {
+                'docsExamined': estimated_docs,
+                'keysExamined': estimated_keys,
+                'nReturned': estimated_returned,
+                'cpuNanos': 0,
+                'planCacheKey': '',
+                'queryFramework': '',
+                'readConcern': {},
+                'writeConcern': {}
+            }
+        
+        # Default fallback
+        return {
+            'docsExamined': 0,
+            'keysExamined': 0,
+            'nReturned': 0,
+            'cpuNanos': 0,
+            'planCacheKey': '',
+            'queryFramework': '',
+            'readConcern': {},
+            'writeConcern': {}
+        }
     
     def _determine_query_type(self, query_str):
         """Determine query type from query string"""
@@ -1574,6 +1873,9 @@ def upload_file():
 
 @app.route('/dashboard')
 def dashboard():
+    # Get available date range from log data
+    min_date, max_date = analyzer.get_available_date_range()
+    
     # Get filter parameters
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
@@ -1606,6 +1908,8 @@ def dashboard():
                          stats=stats,
                          start_date=start_date_str,
                          end_date=end_date_str,
+                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
+                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
                          ip_filter=ip_filter,
                          user_filter=user_filter)
 
@@ -1619,16 +1923,25 @@ def slow_queries():
     # Ensure user correlation is done before filtering
     analyzer.correlate_users_with_access()
     
+    # Ensure all queries have query_hash (generate synthetic if missing)
+    for query in analyzer.slow_queries:
+        if not query.get('query_hash'):
+            query['query_hash'] = analyzer._generate_synthetic_query_hash(query)
+    
     # Get unique databases for filtering
     databases = set()
     for query in analyzer.slow_queries:
         if query.get('database') and query['database'] != 'unknown':
             databases.add(query['database'])
     
+    # Get available date range from log data
+    min_date, max_date = analyzer.get_available_date_range()
+    
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
     selected_plan = request.args.get('plan_summary', 'all')
+    view_mode = request.args.get('view_mode', 'all_executions')  # 'all_executions' or 'unique_queries'
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
@@ -1675,28 +1988,44 @@ def slow_queries():
             
         filtered_queries.append(query)
     
-    # Sort by duration (descending)
-    filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
+    # Process data based on view mode
+    if view_mode == 'unique_queries':
+        # Group queries by pattern
+        unique_queries = analyzer._group_queries_by_pattern(filtered_queries)
+        display_data = unique_queries
+        total_count = len(unique_queries)
+    else:
+        # All executions mode (default)
+        filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
+        display_data = filtered_queries
+        total_count = len(filtered_queries)
     
     return render_template('slow_queries.html', 
-                         queries=filtered_queries, 
+                         queries=display_data, 
                          databases=sorted(databases),
                          selected_db=selected_db,
                          threshold=threshold,
                          selected_plan=selected_plan,
+                         view_mode=view_mode,
                          start_date=start_date_str,
                          end_date=end_date_str,
-                         total_queries=len(filtered_queries))
+                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
+                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
+                         total_queries=total_count)
 
 @app.route('/export-slow-queries')
 def export_slow_queries():
     # Ensure user correlation is done before filtering
     analyzer.correlate_users_with_access()
     
+    # Get available date range from log data for validation
+    min_date, max_date = analyzer.get_available_date_range()
+    
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
     selected_plan = request.args.get('plan_summary', 'all')
+    view_mode = request.args.get('view_mode', 'all_executions')
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
@@ -1746,18 +2075,99 @@ def export_slow_queries():
     # Sort by duration (slowest first)
     filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
     
-    # Generate export content with original JSON entries
-    original_log_entries = []
-    for query in filtered_queries:
-        # Get the original raw log line
-        original_line = analyzer.get_original_log_line(query.get('file_path'), query.get('line_number'))
-        if original_line:
-            try:
-                # Parse the original line to ensure it's valid JSON
-                original_json = json.loads(original_line)
-                original_log_entries.append(original_json)
-            except json.JSONDecodeError:
-                # Fallback to processed data if original line is invalid
+    # Handle export based on view mode
+    if view_mode == 'unique_queries':
+        # Export unique patterns with all executions
+        unique_patterns = analyzer._group_queries_by_pattern(filtered_queries)
+        
+        export_data = {
+            'export_info': {
+                'mode': 'unique_patterns',
+                'total_patterns': len(unique_patterns),
+                'total_executions': len(filtered_queries),
+                'exported_at': datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                'filters_applied': {
+                    'database': selected_db,
+                    'threshold_ms': threshold,
+                    'plan_summary': selected_plan,
+                    'start_date': start_date_str,
+                    'end_date': end_date_str
+                }
+            },
+            'patterns': []
+        }
+        
+        for pattern in unique_patterns:
+            # Get original log entries for this pattern
+            original_executions = []
+            for execution in pattern['executions']:
+                original_line = analyzer.get_original_log_line(execution.get('file_path'), execution.get('line_number'))
+                if original_line:
+                    try:
+                        original_executions.append(json.loads(original_line))
+                    except json.JSONDecodeError:
+                        original_executions.append({
+                            'timestamp': execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                            'duration_ms': execution['duration'],
+                            'database': execution['database'],
+                            'collection': execution['collection'],
+                            'query': execution['query'],
+                            'plan_summary': execution.get('plan_summary', 'None'),
+                            'note': 'Processed data - original log entry was malformed'
+                        })
+                else:
+                    original_executions.append({
+                        'timestamp': execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                        'duration_ms': execution['duration'],
+                        'database': execution['database'],
+                        'collection': execution['collection'],
+                        'query': execution['query'],
+                        'plan_summary': execution.get('plan_summary', 'None'),
+                        'note': 'Processed data - original log entry not found'
+                    })
+            
+            pattern_export = {
+                'pattern_summary': {
+                    'query_hash': pattern['query_hash'],
+                    'database': pattern['database'],
+                    'collection': pattern['collection'],
+                    'plan_summary': pattern['plan_summary'],
+                    'execution_count': pattern['total_count'],
+                    'avg_duration_ms': round(pattern['avg_duration'], 2),
+                    'min_duration_ms': pattern['min_duration'],
+                    'max_duration_ms': pattern['max_duration'],
+                    'first_seen': pattern['first_seen'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if pattern['first_seen'] else None,
+                    'last_seen': pattern['last_seen'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if pattern['last_seen'] else None,
+                    'sample_query': pattern['sample_query']
+                },
+                'all_executions': original_executions
+            }
+            export_data['patterns'].append(pattern_export)
+        
+        export_content = json.dumps(export_data, indent=2, default=str)
+        filename_suffix = 'unique_patterns'
+        
+    else:
+        # Export all executions (current behavior)
+        original_log_entries = []
+        for query in filtered_queries:
+            original_line = analyzer.get_original_log_line(query.get('file_path'), query.get('line_number'))
+            if original_line:
+                try:
+                    original_log_entries.append(json.loads(original_line))
+                except json.JSONDecodeError:
+                    original_log_entries.append({
+                        'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                        'connection_id': query['connection_id'],
+                        'duration_ms': query['duration'],
+                        'database': query['database'],
+                        'collection': query['collection'],
+                        'query': query['query'],
+                        'plan_summary': query.get('plan_summary', 'None'),
+                        'username': query.get('username', 'Unknown'),
+                        'note': 'Processed data - original log entry was malformed'
+                    })
+            else:
                 original_log_entries.append({
                     'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
                     'connection_id': query['connection_id'],
@@ -1767,28 +2177,15 @@ def export_slow_queries():
                     'query': query['query'],
                     'plan_summary': query.get('plan_summary', 'None'),
                     'username': query.get('username', 'Unknown'),
-                    'note': 'Processed data - original log entry was malformed'
+                    'note': 'Processed data - original log entry not found'
                 })
-        else:
-            # Fallback if we can't find the original line
-            original_log_entries.append({
-                'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                'connection_id': query['connection_id'],
-                'duration_ms': query['duration'],
-                'database': query['database'],
-                'collection': query['collection'],
-                'query': query['query'],
-                'plan_summary': query.get('plan_summary', 'None'),
-                'username': query.get('username', 'Unknown'),
-                'note': 'Processed data - original log entry not found'
-            })
-    
-    # Create JSON export with only original log entries
-    export_content = json.dumps(original_log_entries, indent=2, default=str)
+        
+        export_content = json.dumps(original_log_entries, indent=2, default=str)
+        filename_suffix = 'all_executions'
     
     # Generate filename
     db_suffix = f"_{selected_db}" if selected_db != 'all' else "_all"
-    filename = f"mongodb_slow_queries{db_suffix}_{threshold}ms_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    filename = f"mongodb_slow_queries_{filename_suffix}{db_suffix}_{threshold}ms_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
     response = Response(export_content, mimetype='application/json')
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
@@ -1797,6 +2194,9 @@ def export_slow_queries():
 
 @app.route('/search-logs')
 def search_logs():
+    # Get available date range from log data
+    min_date, max_date = analyzer.get_available_date_range()
+    
     # Get search parameters
     keyword = request.args.get('keyword', '').strip()
     field_name = request.args.get('field_name', '').strip()
@@ -1847,6 +2247,8 @@ def search_logs():
                          use_regex=use_regex,
                          start_date=start_date_str,
                          end_date=end_date_str,
+                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
+                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
                          limit=limit,
                          results=results,
                          search_performed=search_performed,
@@ -1985,8 +2387,46 @@ def slow_query_analysis():
     # Ensure user correlation is done before analysis
     analyzer.correlate_users_with_access()
     
-    # Analyze query patterns
+    # Get available date range from log data
+    min_date, max_date = analyzer.get_available_date_range()
+    
+    # Get filter parameters
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    
+    # Parse date filters
+    start_date = None
+    end_date = None
+    if start_date_str:
+        try:
+            start_date = datetime.fromisoformat(start_date_str)
+        except ValueError:
+            pass
+    if end_date_str:
+        try:
+            end_date = datetime.fromisoformat(end_date_str)
+        except ValueError:
+            pass
+    
+    # Filter slow queries by date range before analysis
+    filtered_queries = []
+    for query in analyzer.slow_queries:
+        # Date filters
+        if start_date and query['timestamp'] < start_date:
+            continue
+        if end_date and query['timestamp'] > end_date:
+            continue
+        filtered_queries.append(query)
+    
+    # Temporarily replace slow_queries for analysis
+    original_queries = analyzer.slow_queries
+    analyzer.slow_queries = filtered_queries
+    
+    # Analyze query patterns with filtered data
     patterns = analyzer.analyze_query_patterns()
+    
+    # Restore original queries
+    analyzer.slow_queries = original_queries
     
     # Calculate summary statistics
     total_executions = sum(pattern['total_count'] for pattern in patterns.values())
@@ -2003,7 +2443,11 @@ def slow_query_analysis():
                          patterns=patterns,
                          total_executions=total_executions,
                          avg_duration=avg_duration,
-                         high_priority_count=high_priority_count)
+                         high_priority_count=high_priority_count,
+                         start_date=start_date_str,
+                         end_date=end_date_str,
+                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
+                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None)
 
 @app.route('/export-query-analysis')
 def export_query_analysis():
@@ -2065,6 +2509,356 @@ def export_query_analysis():
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
     
     return response
+
+@app.route('/current-op-analyzer', methods=['GET', 'POST'])
+def current_op_analyzer():
+    """Analyze MongoDB db.currentOp() output"""
+    if request.method == 'POST':
+        try:
+            current_op_data = ''
+            original_data = ''
+            
+            # Check if data was uploaded as a file
+            if 'currentop_file' in request.files:
+                file = request.files['currentop_file']
+                if file and file.filename:
+                    try:
+                        # Read file content
+                        file_content = file.read().decode('utf-8')
+                        current_op_data = file_content.strip()
+                        original_data = f"[From file: {file.filename}]\n{current_op_data}"
+                    except UnicodeDecodeError:
+                        flash('Error reading file. Please ensure it contains valid text data.', 'error')
+                        return render_template('current_op_analyzer.html')
+            
+            # If no file data, check for pasted text
+            if not current_op_data:
+                current_op_data = request.form.get('current_op_data', '').strip()
+                original_data = current_op_data
+            
+            if not current_op_data:
+                flash('Please paste the db.currentOp() output or upload a file containing the output.', 'error')
+                return render_template('current_op_analyzer.html')
+            
+            # Parse and analyze the currentOp data
+            analysis = analyze_current_op(current_op_data)
+            
+            return render_template('current_op_analyzer.html', 
+                                 analysis=analysis, 
+                                 original_data=original_data)
+                                 
+        except Exception as e:
+            flash(f'Error analyzing currentOp data: {str(e)}', 'error')
+            return render_template('current_op_analyzer.html')
+    
+    return render_template('current_op_analyzer.html')
+
+def analyze_current_op(current_op_data):
+    """Analyze db.currentOp() output and provide insights"""
+    try:
+        # Parse JSON data
+        if current_op_data.startswith('db.currentOp()'):
+            current_op_data = current_op_data.replace('db.currentOp()', '').strip()
+        
+        # Handle various formats
+        if not current_op_data.startswith('{'):
+            current_op_data = current_op_data.strip()
+            if current_op_data.startswith('inprog'):
+                # Handle output that starts with "inprog : ["
+                start_idx = current_op_data.find('[')
+                end_idx = current_op_data.rfind(']')
+                if start_idx != -1 and end_idx != -1:
+                    current_op_data = '{"inprog": ' + current_op_data[start_idx:end_idx+1] + '}'
+        
+        data = json.loads(current_op_data)
+        operations = data.get('inprog', []) if isinstance(data, dict) else data
+        
+        if not operations:
+            return {
+                'error': 'No operations found in the provided data',
+                'total_operations': 0
+            }
+        
+        # Initialize analysis results
+        analysis = {
+            'total_operations': len(operations),
+            'operation_types': Counter(),
+            'operation_states': Counter(),
+            'long_running_ops': [],
+            'resource_intensive_ops': [],
+            'lock_analysis': {
+                'read_locks': [],
+                'write_locks': [],
+                'waiting_operations': []
+            },
+            'collection_hotspots': Counter(),
+            'database_hotspots': Counter(),
+            'client_connections': Counter(),
+            'query_analysis': {
+                'collscans': [],
+                'index_scans': [],
+                'duplicate_queries': []
+            },
+            'recommendations': [],
+            'performance_metrics': {
+                'avg_duration': 0,
+                'max_duration': 0,
+                'min_duration': float('inf'),
+                'total_duration': 0
+            }
+        }
+        
+        durations = []
+        query_patterns = defaultdict(list)
+        
+        # Analyze each operation
+        for op in operations:
+            if not isinstance(op, dict):
+                continue
+                
+            # Operation type analysis
+            op_type = op.get('op', 'unknown')
+            analysis['operation_types'][op_type] += 1
+            
+            # Operation state analysis  
+            if 'active' in op:
+                state = 'active' if op['active'] else 'inactive'
+            elif 'waitingForLock' in op:
+                state = 'waiting_for_lock' if op['waitingForLock'] else 'active'
+            else:
+                state = 'unknown'
+            analysis['operation_states'][state] += 1
+            
+            # Duration analysis
+            duration = 0
+            if 'microsecs_running' in op:
+                duration = op['microsecs_running'] / 1000000  # Convert to seconds
+            elif 'secs_running' in op:
+                duration = op['secs_running']
+            
+            if duration > 0:
+                durations.append(duration)
+                analysis['performance_metrics']['total_duration'] += duration
+                analysis['performance_metrics']['max_duration'] = max(
+                    analysis['performance_metrics']['max_duration'], duration
+                )
+                analysis['performance_metrics']['min_duration'] = min(
+                    analysis['performance_metrics']['min_duration'], duration
+                )
+                
+                # Long running operations (>30 seconds)
+                if duration > 30:
+                    analysis['long_running_ops'].append({
+                        'opid': op.get('opid'),
+                        'op': op_type,
+                        'duration': duration,
+                        'ns': op.get('ns', 'unknown'),
+                        'desc': op.get('desc', ''),
+                        'client': op.get('client', 'unknown')
+                    })
+            
+            # Lock analysis
+            locks = op.get('locks', {})
+            waiting_for_lock = op.get('waitingForLock', False)
+            
+            if waiting_for_lock:
+                analysis['lock_analysis']['waiting_operations'].append({
+                    'opid': op.get('opid'),
+                    'op': op_type,
+                    'ns': op.get('ns', 'unknown'),
+                    'duration': duration
+                })
+            
+            for lock_type, lock_info in locks.items():
+                if isinstance(lock_info, dict):
+                    lock_mode = lock_info.get('mode', '')
+                    if lock_mode in ['R', 'r']:
+                        analysis['lock_analysis']['read_locks'].append({
+                            'opid': op.get('opid'),
+                            'type': lock_type,
+                            'ns': op.get('ns', 'unknown')
+                        })
+                    elif lock_mode in ['W', 'w', 'X']:
+                        analysis['lock_analysis']['write_locks'].append({
+                            'opid': op.get('opid'),
+                            'type': lock_type,
+                            'ns': op.get('ns', 'unknown')
+                        })
+            
+            # Collection and database hotspots
+            ns = op.get('ns', '')
+            if ns and '.' in ns:
+                db_name, collection_name = ns.split('.', 1)
+                analysis['database_hotspots'][db_name] += 1
+                analysis['collection_hotspots'][ns] += 1
+            
+            # Client connection analysis
+            client = op.get('client', 'unknown')
+            if client != 'unknown':
+                analysis['client_connections'][client] += 1
+            
+            # Query analysis
+            command = op.get('command', {})
+            plan_summary = op.get('planSummary', '')
+            
+            if plan_summary == 'COLLSCAN':
+                analysis['query_analysis']['collscans'].append({
+                    'opid': op.get('opid'),
+                    'ns': ns,
+                    'duration': duration,
+                    'command': str(command)[:200] + '...' if len(str(command)) > 200 else str(command)
+                })
+            elif 'IXSCAN' in plan_summary:
+                analysis['query_analysis']['index_scans'].append({
+                    'opid': op.get('opid'),
+                    'ns': ns,
+                    'plan': plan_summary
+                })
+            
+            # Group similar queries for duplicate detection
+            if command:
+                query_key = _normalize_query_for_grouping(command)
+                query_patterns[query_key].append({
+                    'opid': op.get('opid'),
+                    'ns': ns,
+                    'duration': duration
+                })
+        
+        # Calculate average duration
+        if durations:
+            analysis['performance_metrics']['avg_duration'] = sum(durations) / len(durations)
+        else:
+            analysis['performance_metrics']['min_duration'] = 0
+        
+        # Find duplicate queries
+        for query_key, ops in query_patterns.items():
+            if len(ops) > 1:
+                analysis['query_analysis']['duplicate_queries'].append({
+                    'query_pattern': query_key[:100] + '...' if len(query_key) > 100 else query_key,
+                    'count': len(ops),
+                    'operations': ops
+                })
+        
+        # Generate recommendations
+        analysis['recommendations'] = _generate_current_op_recommendations(analysis)
+        
+        return analysis
+        
+    except json.JSONDecodeError as e:
+        return {
+            'error': f'Invalid JSON format: {str(e)}',
+            'total_operations': 0
+        }
+    except Exception as e:
+        return {
+            'error': f'Error analyzing data: {str(e)}',
+            'total_operations': 0
+        }
+
+def _normalize_query_for_grouping(command):
+    """Normalize query command for grouping similar operations"""
+    if not isinstance(command, dict):
+        return str(command)
+    
+    # Create a normalized version by removing variable values
+    normalized = {}
+    for key, value in command.items():
+        if key in ['find', 'aggregate', 'update', 'insert', 'delete']:
+            normalized[key] = value  # Keep collection name
+        elif key in ['filter', 'query', 'pipeline']:
+            # Normalize the query structure
+            normalized[key] = _normalize_query_structure(value)
+        else:
+            normalized[key] = type(value).__name__  # Just keep the type
+    
+    return json.dumps(normalized, sort_keys=True)
+
+def _normalize_query_structure(query):
+    """Normalize query structure by replacing values with types"""
+    if isinstance(query, dict):
+        normalized = {}
+        for k, v in query.items():
+            if isinstance(v, (str, int, float, bool)):
+                normalized[k] = type(v).__name__
+            elif isinstance(v, (list, dict)):
+                normalized[k] = _normalize_query_structure(v)
+            else:
+                normalized[k] = 'mixed'
+        return normalized
+    elif isinstance(query, list):
+        if query:
+            return [_normalize_query_structure(query[0])] if query else []
+        return []
+    else:
+        return type(query).__name__
+
+def _generate_current_op_recommendations(analysis):
+    """Generate recommendations based on currentOp analysis"""
+    recommendations = []
+    
+    # Long running operations
+    if analysis['long_running_ops']:
+        recommendations.append({
+            'type': 'warning',
+            'title': 'Long-Running Operations Detected',
+            'description': f"Found {len(analysis['long_running_ops'])} operations running longer than 30 seconds.",
+            'action': 'Review and consider killing operations that may be stuck or inefficient.',
+            'priority': 'high'
+        })
+    
+    # Collection scans
+    if analysis['query_analysis']['collscans']:
+        recommendations.append({
+            'type': 'error',
+            'title': 'Collection Scans Detected',
+            'description': f"Found {len(analysis['query_analysis']['collscans'])} operations performing full collection scans.",
+            'action': 'Consider adding appropriate indexes to improve query performance.',
+            'priority': 'high'
+        })
+    
+    # Duplicate queries
+    if analysis['query_analysis']['duplicate_queries']:
+        recommendations.append({
+            'type': 'info',
+            'title': 'Duplicate Operations Found',
+            'description': f"Found {len(analysis['query_analysis']['duplicate_queries'])} patterns with multiple concurrent executions.",
+            'action': 'Review if these operations can be optimized or cached.',
+            'priority': 'medium'
+        })
+    
+    # Lock contention
+    if analysis['lock_analysis']['waiting_operations']:
+        recommendations.append({
+            'type': 'warning',
+            'title': 'Lock Contention Detected',
+            'description': f"Found {len(analysis['lock_analysis']['waiting_operations'])} operations waiting for locks.",
+            'action': 'Review operations causing lock contention and consider optimization.',
+            'priority': 'high'
+        })
+    
+    # High connection count from single client
+    for client, count in analysis['client_connections'].most_common(3):
+        if count > 10:
+            recommendations.append({
+                'type': 'info',
+                'title': 'High Connection Count',
+                'description': f"Client {client} has {count} active operations.",
+                'action': 'Review connection pooling and operation efficiency for this client.',
+                'priority': 'medium'
+            })
+    
+    # High activity on specific collections
+    for ns, count in analysis['collection_hotspots'].most_common(3):
+        if count > 5:
+            recommendations.append({
+                'type': 'info',
+                'title': 'Collection Hotspot',
+                'description': f"Collection {ns} has {count} concurrent operations.",
+                'action': 'Monitor for potential bottlenecks and consider sharding if needed.',
+                'priority': 'low'
+            })
+    
+    return recommendations
 
 if __name__ == '__main__':
     app.run(debug=True, host='127.0.0.1', port=5000)  # Listen only on localhost

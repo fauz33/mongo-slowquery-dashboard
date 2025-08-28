@@ -67,6 +67,73 @@
     </div>
 </div>
 
+<!-- Filter Controls -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-filter me-2"></i>Filter Options</h5>
+                {% if min_date and max_date %}
+                <small class="text-muted">
+                    <i class="fas fa-info-circle me-1"></i>Log data available from {{ min_date }} to {{ max_date }}
+                </small>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('slow_query_analysis') }}" class="row g-3">
+                    <div class="col-md-6">
+                        <label for="start_date" class="form-label">Start Date</label>
+                        <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
+                               value="{{ start_date or '' }}"
+                               {% if min_date %}min="{{ min_date }}"{% endif %}
+                               {% if max_date %}max="{{ max_date }}"{% endif %}>
+                        {% if min_date %}
+                        <small class="form-text text-muted">Available: {{ min_date }} to {{ max_date }}</small>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label for="end_date" class="form-label">End Date</label>
+                        <input type="datetime-local" class="form-control" id="end_date" name="end_date" 
+                               value="{{ end_date or '' }}"
+                               {% if min_date %}min="{{ min_date }}"{% endif %}
+                               {% if max_date %}max="{{ max_date }}"{% endif %}>
+                        {% if max_date %}
+                        <small class="form-text text-muted">Available: {{ min_date }} to {{ max_date }}</small>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-12 mt-2">
+                        {% if min_date and max_date %}
+                        <div class="mb-2">
+                            <small class="text-muted me-2">Quick Select:</small>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('all')">
+                                <i class="fas fa-calendar-alt me-1"></i>All Data
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('today')">
+                                <i class="fas fa-calendar-day me-1"></i>Today
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('last24h')">
+                                <i class="fas fa-clock me-1"></i>Last 24h
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('last7d')">
+                                <i class="fas fa-calendar-week me-1"></i>Last 7 days
+                            </button>
+                        </div>
+                        {% endif %}
+                        <div class="d-flex align-items-end">
+                            <button type="submit" class="btn btn-primary me-2">
+                                <i class="fas fa-filter me-2"></i>Apply Filters
+                            </button>
+                            <a href="{{ url_for('slow_query_analysis') }}" class="btn btn-outline-secondary">
+                                <i class="fas fa-undo me-2"></i>Reset
+                            </a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Summary Statistics -->
 <div class="row mb-4">
     <div class="col-md-3">
@@ -239,6 +306,9 @@
                                         <div>{{ pattern.avg_selectivity|round(1) }}%</div>
                                         <small class="text-muted">
                                             {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
+                                            {% if pattern.get('is_estimated') %}
+                                                <br><span class="badge bg-info">est.</span>
+                                            {% endif %}
                                         </small>
                                     {% else %}
                                         <span class="text-muted">N/A</span>
@@ -450,6 +520,71 @@ function copyPatternQuery() {
     } else {
         alert('Copy functionality not supported in this browser.');
     }
+}
+
+// Date range functionality
+function setDateRange(range) {
+    const startDateInput = document.getElementById('start_date');
+    const endDateInput = document.getElementById('end_date');
+    const now = new Date();
+    
+    // Get the available date range from the template
+    const minDateStr = "{{ min_date if min_date else '' }}";
+    const maxDateStr = "{{ max_date if max_date else '' }}";
+    
+    let startDate, endDate;
+    
+    switch(range) {
+        case 'all':
+            startDate = minDateStr ? new Date(minDateStr.replace(' ', 'T')) : null;
+            endDate = maxDateStr ? new Date(maxDateStr.replace(' ', 'T')) : null;
+            break;
+        case 'today':
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            startDate = today;
+            endDate = new Date(today.getTime() + 24*60*60*1000 - 1); // End of day
+            break;
+        case 'last24h':
+            endDate = new Date(now);
+            startDate = new Date(now.getTime() - 24*60*60*1000);
+            break;
+        case 'last7d':
+            endDate = new Date(now);
+            startDate = new Date(now.getTime() - 7*24*60*60*1000);
+            break;
+    }
+    
+    // Apply min/max constraints
+    if (minDateStr && startDate) {
+        const minDate = new Date(minDateStr.replace(' ', 'T'));
+        if (startDate < minDate) startDate = minDate;
+    }
+    if (maxDateStr && endDate) {
+        const maxDate = new Date(maxDateStr.replace(' ', 'T'));
+        if (endDate > maxDate) endDate = maxDate;
+    }
+    
+    // Set the input values
+    if (startDate) {
+        startDateInput.value = formatDateTimeLocal(startDate);
+    } else {
+        startDateInput.value = '';
+    }
+    
+    if (endDate) {
+        endDateInput.value = formatDateTimeLocal(endDate);
+    } else {
+        endDateInput.value = '';
+    }
+}
+
+function formatDateTimeLocal(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 </script>
 

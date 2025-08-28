@@ -23,12 +23,50 @@
     </div>
 </div>
 
+<!-- View Mode Toggle -->
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-center">
+                    <span class="me-3 fw-bold"><i class="fas fa-eye me-2"></i>View Mode:</span>
+                    <div class="btn-group" role="group">
+                        <input type="radio" class="btn-check" name="viewMode" id="allExecutions" value="all_executions" 
+                               {% if view_mode == 'all_executions' %}checked{% endif %}>
+                        <label class="btn btn-outline-primary" for="allExecutions">
+                            <i class="fas fa-list me-1"></i>All Executions
+                        </label>
+                        
+                        <input type="radio" class="btn-check" name="viewMode" id="uniqueQueries" value="unique_queries" 
+                               {% if view_mode == 'unique_queries' %}checked{% endif %}>
+                        <label class="btn btn-outline-primary" for="uniqueQueries">
+                            <i class="fas fa-layer-group me-1"></i>Unique Queries
+                        </label>
+                    </div>
+                    <small class="text-muted ms-3">
+                        {% if view_mode == 'all_executions' %}
+                            Showing individual query executions
+                        {% else %}
+                            Showing grouped query patterns
+                        {% endif %}
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Filter Controls -->
 <div class="row mb-4">
     <div class="col-12">
         <div class="card">
             <div class="card-header">
                 <h5><i class="fas fa-filter me-2"></i>Filter Options</h5>
+                {% if min_date and max_date %}
+                <small class="text-muted">
+                    <i class="fas fa-info-circle me-1"></i>Log data available from {{ min_date }} to {{ max_date }}
+                </small>
+                {% endif %}
             </div>
             <div class="card-body">
                 <form method="GET" action="{{ url_for('slow_queries') }}" class="row g-3">
@@ -49,12 +87,22 @@
                     <div class="col-md-2">
                         <label for="start_date" class="form-label">Start Date</label>
                         <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
-                               value="{{ start_date or '' }}">
+                               value="{{ start_date or '' }}"
+                               {% if min_date %}min="{{ min_date }}"{% endif %}
+                               {% if max_date %}max="{{ max_date }}"{% endif %}>
+                        {% if min_date %}
+                        <small class="form-text text-muted">Available: {{ min_date }} to {{ max_date }}</small>
+                        {% endif %}
                     </div>
                     <div class="col-md-2">
                         <label for="end_date" class="form-label">End Date</label>
                         <input type="datetime-local" class="form-control" id="end_date" name="end_date" 
-                               value="{{ end_date or '' }}">
+                               value="{{ end_date or '' }}"
+                               {% if min_date %}min="{{ min_date }}"{% endif %}
+                               {% if max_date %}max="{{ max_date }}"{% endif %}>
+                        {% if max_date %}
+                        <small class="form-text text-muted">Available: {{ min_date }} to {{ max_date }}</small>
+                        {% endif %}
                     </div>
                     <div class="col-md-2">
                         <label for="plan_summary" class="form-label">Plan Summary</label>
@@ -65,13 +113,32 @@
                             <option value="other" {% if selected_plan == 'other' %}selected{% endif %}>Other</option>
                         </select>
                     </div>
-                    <div class="col-md-12 d-flex align-items-end mt-2">
-                        <button type="submit" class="btn btn-primary me-2">
-                            <i class="fas fa-filter me-2"></i>Apply Filters
-                        </button>
-                        <a href="{{ url_for('slow_queries') }}" class="btn btn-outline-secondary">
-                            <i class="fas fa-undo me-2"></i>Reset
-                        </a>
+                    <div class="col-md-12 mt-2">
+                        {% if min_date and max_date %}
+                        <div class="mb-2">
+                            <small class="text-muted me-2">Quick Select:</small>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('all')">
+                                <i class="fas fa-calendar-alt me-1"></i>All Data
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('today')">
+                                <i class="fas fa-calendar-day me-1"></i>Today
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('last24h')">
+                                <i class="fas fa-clock me-1"></i>Last 24h
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-info me-1" onclick="setDateRange('last7d')">
+                                <i class="fas fa-calendar-week me-1"></i>Last 7 days
+                            </button>
+                        </div>
+                        {% endif %}
+                        <div class="d-flex align-items-end">
+                            <button type="submit" class="btn btn-primary me-2">
+                                <i class="fas fa-filter me-2"></i>Apply Filters
+                            </button>
+                            <a href="{{ url_for('slow_queries') }}" class="btn btn-outline-secondary">
+                                <i class="fas fa-undo me-2"></i>Reset
+                            </a>
+                        </div>
                     </div>
                 </form>
             </div>
@@ -182,78 +249,147 @@
                             <thead class="table-primary">
                                 <tr>
                                     <th style="min-width: 80px; color: #000; font-weight: bold;">#</th>
-                                    <th style="min-width: 100px; color: #000; font-weight: bold;">Duration</th>
-                                    <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
-                                    <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
-                                    <th style="min-width: 100px; color: #000; font-weight: bold;">Hash</th>
-                                    <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
-                                    <th style="min-width: 100px; color: #000; font-weight: bold;">User</th>
-                                    <th style="min-width: 100px; color: #000; font-weight: bold;">Connection</th>
-                                    <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
-                                    <th style="min-width: 400px; color: #000; font-weight: bold;">Query</th>
+                                    {% if view_mode == 'unique_queries' %}
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Avg Duration</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Hash</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Executions</th>
+                                        <th style="min-width: 140px; color: #000; font-weight: bold;">Duration Range</th>
+                                        <th style="min-width: 140px; color: #000; font-weight: bold;">Last Seen</th>
+                                        <th style="min-width: 300px; color: #000; font-weight: bold;">Sample Query</th>
+                                    {% else %}
+                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Duration</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Hash</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold;">User</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Connection</th>
+                                        <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
+                                        <th style="min-width: 400px; color: #000; font-weight: bold;">Query</th>
+                                    {% endif %}
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for query in queries %}
                                 <tr>
                                     <td class="text-center">{{ loop.index }}</td>
-                                    <td class="text-center">
-                                        {% if query.duration >= 5000 %}
-                                            <span class="badge bg-danger fs-6">{{ query.duration }}ms</span>
-                                        {% elif query.duration >= 1000 %}
-                                            <span class="badge bg-warning fs-6">{{ query.duration }}ms</span>
-                                        {% else %}
-                                            <span class="badge bg-info fs-6">{{ query.duration }}ms</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
-                                    </td>
-                                    <td>{{ query.collection or 'unknown' }}</td>
-                                    <td class="text-center">
-                                        {% if query.query_hash %}
-                                            <small class="text-muted font-monospace">{{ query.query_hash[:8] }}...</small>
-                                        {% else %}
-                                            <span class="badge bg-light text-muted">none</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="text-center">
-                                        {% if query.plan_summary == 'COLLSCAN' %}
-                                            <span class="badge bg-danger">{{ query.plan_summary }}</span>
-                                        {% elif query.plan_summary == 'IXSCAN' %}
-                                            <span class="badge bg-success">{{ query.plan_summary }}</span>
-                                        {% elif query.plan_summary and query.plan_summary != 'None' %}
-                                            <span class="badge bg-secondary">{{ query.plan_summary }}</span>
-                                        {% else %}
-                                            <span class="badge bg-light text-dark">none</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="text-center">
-                                        {% if query.username and query.username != 'Unknown' %}
-                                            <span class="badge bg-success">{{ query.username }}</span>
-                                        {% else %}
-                                            <span class="badge bg-light text-muted">unknown</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="text-center">
-                                        <small class="text-muted">conn{{ query.connection_id }}</small>
-                                    </td>
-                                    <td>
-                                        <small>{{ query.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
-                                    </td>
-                                    <td>
-                                        <div class="query-text" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
-                                             title="{{ query.query }}">
-                                            {{ query.query[:100] }}{% if query.query|length > 100 %}...{% endif %}
-                                        </div>
-                                        <button class="btn btn-sm btn-outline-primary mt-1" 
-                                                data-bs-toggle="modal" 
-                                                data-bs-target="#queryModal"
-                                                data-query-number="{{ loop.index }}"
-                                                data-query-text="{{ query.query|e }}">
-                                            <i class="fas fa-expand-alt me-1"></i>View Full
-                                        </button>
-                                    </td>
+                                    {% if view_mode == 'unique_queries' %}
+                                        <td class="text-center">
+                                            {% if query.avg_duration >= 5000 %}
+                                                <span class="badge bg-danger fs-6">{{ query.avg_duration|round|int }}ms</span>
+                                            {% elif query.avg_duration >= 1000 %}
+                                                <span class="badge bg-warning fs-6">{{ query.avg_duration|round|int }}ms</span>
+                                            {% else %}
+                                                <span class="badge bg-info fs-6">{{ query.avg_duration|round|int }}ms</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
+                                        </td>
+                                        <td>{{ query.collection or 'unknown' }}</td>
+                                        <td class="text-center">
+                                            {% if query.query_hash %}
+                                                <small class="text-muted font-monospace">{{ query.query_hash[:8] }}...</small>
+                                            {% else %}
+                                                <span class="badge bg-light text-muted">none</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-center">
+                                            {% if query.plan_summary == 'COLLSCAN' %}
+                                                <span class="badge bg-danger">{{ query.plan_summary }}</span>
+                                            {% elif query.plan_summary == 'IXSCAN' %}
+                                                <span class="badge bg-success">{{ query.plan_summary }}</span>
+                                            {% elif query.plan_summary and query.plan_summary != 'None' %}
+                                                <span class="badge bg-secondary">{{ query.plan_summary }}</span>
+                                            {% else %}
+                                                <span class="badge bg-light text-dark">none</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-primary">{{ query.total_count }}×</span>
+                                        </td>
+                                        <td class="text-center">
+                                            <small class="text-muted">{{ query.duration_range }}</small>
+                                        </td>
+                                        <td>
+                                            <small>{{ query.last_seen.strftime('%Y-%m-%d %H:%M:%S') if query.last_seen else 'N/A' }}</small>
+                                        </td>
+                                        <td>
+                                            <div class="query-text" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
+                                                 title="{{ query.sample_query }}">
+                                                {{ query.sample_query[:80] }}{% if query.sample_query|length > 80 %}...{% endif %}
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-primary mt-1" 
+                                                    data-bs-toggle="modal" 
+                                                    data-bs-target="#queryModal"
+                                                    data-query-number="{{ loop.index }}"
+                                                    data-query-text="{{ query.sample_query|e }}"
+                                                    data-execution-count="{{ query.total_count }}">
+                                                <i class="fas fa-expand-alt me-1"></i>View Details
+                                            </button>
+                                        </td>
+                                    {% else %}
+                                        <td class="text-center">
+                                            {% if query.duration >= 5000 %}
+                                                <span class="badge bg-danger fs-6">{{ query.duration }}ms</span>
+                                            {% elif query.duration >= 1000 %}
+                                                <span class="badge bg-warning fs-6">{{ query.duration }}ms</span>
+                                            {% else %}
+                                                <span class="badge bg-info fs-6">{{ query.duration }}ms</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
+                                        </td>
+                                        <td>{{ query.collection or 'unknown' }}</td>
+                                        <td class="text-center">
+                                            {% if query.query_hash %}
+                                                <small class="text-muted font-monospace">{{ query.query_hash[:8] }}...</small>
+                                            {% else %}
+                                                <span class="badge bg-light text-muted">none</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-center">
+                                            {% if query.plan_summary == 'COLLSCAN' %}
+                                                <span class="badge bg-danger">{{ query.plan_summary }}</span>
+                                            {% elif query.plan_summary == 'IXSCAN' %}
+                                                <span class="badge bg-success">{{ query.plan_summary }}</span>
+                                            {% elif query.plan_summary and query.plan_summary != 'None' %}
+                                                <span class="badge bg-secondary">{{ query.plan_summary }}</span>
+                                            {% else %}
+                                                <span class="badge bg-light text-dark">none</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-center">
+                                            {% if query.username and query.username != 'Unknown' %}
+                                                <span class="badge bg-success">{{ query.username }}</span>
+                                            {% else %}
+                                                <span class="badge bg-light text-muted">unknown</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-center">
+                                            <small class="text-muted">conn{{ query.connection_id }}</small>
+                                        </td>
+                                        <td>
+                                            <small>{{ query.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                        </td>
+                                        <td>
+                                            <div class="query-text" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
+                                                 title="{{ query.query }}">
+                                                {{ query.query[:100] }}{% if query.query|length > 100 %}...{% endif %}
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-primary mt-1" 
+                                                    data-bs-toggle="modal" 
+                                                    data-bs-target="#queryModal"
+                                                    data-query-number="{{ loop.index }}"
+                                                    data-query-text="{{ query.query|e }}">
+                                                <i class="fas fa-expand-alt me-1"></i>View Full
+                                            </button>
+                                        </td>
+                                    {% endif %}
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -311,6 +447,18 @@
 document.addEventListener('DOMContentLoaded', function() {
     const queryModal = document.getElementById('queryModal');
     
+    // View mode toggle functionality
+    const viewModeRadios = document.querySelectorAll('input[name="viewMode"]');
+    viewModeRadios.forEach(radio => {
+        radio.addEventListener('change', function() {
+            if (this.checked) {
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('view_mode', this.value);
+                window.location.href = currentUrl.toString();
+            }
+        });
+    });
+    
     // Listen for modal show event
     queryModal.addEventListener('show.bs.modal', function(event) {
         // Button that triggered the modal
@@ -319,13 +467,21 @@ document.addEventListener('DOMContentLoaded', function() {
         // Extract info from data-* attributes
         const queryNumber = button.getAttribute('data-query-number');
         const queryText = button.getAttribute('data-query-text');
+        const executionCount = button.getAttribute('data-execution-count');
         
         // Update the modal's content
         const modalQueryNumber = queryModal.querySelector('#queryNumber');
         const modalQueryText = queryModal.querySelector('#fullQuery');
         
-        modalQueryNumber.textContent = queryNumber;
-        modalQueryText.textContent = queryText;
+        if (executionCount) {
+            // Unique queries mode - show pattern details
+            modalQueryNumber.textContent = `${queryNumber} (${executionCount} executions)`;
+            modalQueryText.textContent = queryText;
+        } else {
+            // All executions mode - show individual query
+            modalQueryNumber.textContent = queryNumber;
+            modalQueryText.textContent = queryText;
+        }
     });
     
     // Export button functionality
@@ -333,6 +489,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (exportBtn) {
         exportBtn.addEventListener('click', function() {
             const params = new URLSearchParams(window.location.search);
+            // Ensure view_mode is included in export
+            const currentViewMode = document.querySelector('input[name="viewMode"]:checked');
+            if (currentViewMode) {
+                params.set('view_mode', currentViewMode.value);
+            }
             const exportUrl = '{{ url_for("export_slow_queries") }}?' + params.toString();
             window.open(exportUrl, '_blank');
         });
@@ -384,6 +545,59 @@ function copyQuery() {
         
         alert('Text selected. Please press Ctrl+C (Cmd+C on Mac) to copy.');
     }
+}
+
+// Date range helper functions
+function setDateRange(range) {
+    const startDateInput = document.getElementById('start_date');
+    const endDateInput = document.getElementById('end_date');
+    const now = new Date();
+    
+    // Get available date range from template variables
+    const minDate = '{{ min_date }}';
+    const maxDate = '{{ max_date }}';
+    
+    let startDate, endDate;
+    
+    switch(range) {
+        case 'all':
+            startDate = minDate;
+            endDate = maxDate;
+            break;
+        case 'today':
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const todayEnd = new Date();
+            todayEnd.setHours(23, 59, 59, 999);
+            startDate = formatDateTimeLocal(today);
+            endDate = formatDateTimeLocal(todayEnd);
+            break;
+        case 'last24h':
+            const last24h = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+            startDate = formatDateTimeLocal(last24h);
+            endDate = formatDateTimeLocal(now);
+            break;
+        case 'last7d':
+            const last7d = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+            startDate = formatDateTimeLocal(last7d);
+            endDate = formatDateTimeLocal(now);
+            break;
+        default:
+            return;
+    }
+    
+    startDateInput.value = startDate;
+    endDateInput.value = endDate;
+}
+
+function formatDateTimeLocal(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 </script>
