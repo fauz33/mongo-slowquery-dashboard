@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+
+{% block title %}Slow Query Analysis - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<style>
+.action-btn {
+    width: 36px !important;
+    height: 32px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 6px !important;
+    padding: 0 !important;
+    transition: all 0.2s ease !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+}
+
+.action-btn:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15) !important;
+}
+
+.table td.actions-column {
+    vertical-align: middle !important;
+    text-align: center !important;
+    width: 80px !important;
+    padding: 8px 4px !important;
+}
+
+.table th.actions-header {
+    text-align: center !important;
+    width: 80px !important;
+}
+
+.table th {
+    text-align: center !important;
+    vertical-align: middle !important;
+}
+
+.table td {
+    text-align: center !important;
+    vertical-align: middle !important;
+}
+
+.table td:nth-child(2) {
+    text-align: left !important;
+}
+</style>
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">Slow Query Analysis</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-success" id="exportBtn">
+                <i class="fas fa-download me-2"></i>Export Analysis
+            </button>
+            <a href="{{ url_for('slow_queries') }}" class="btn btn-sm btn-info">
+                <i class="fas fa-list me-2"></i>List of Slow Queries
+            </a>
+            <a href="{{ url_for('index_suggestions') }}" class="btn btn-sm btn-warning">
+                <i class="fas fa-lightbulb me-2"></i>Index Suggestions
+            </a>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Summary Statistics -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card card-stats border-left-primary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Unique Query Patterns</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ patterns|length }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-primary text-white">
+                            <i class="fas fa-fingerprint"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Total Executions</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ total_executions }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-warning text-white">
+                            <i class="fas fa-play-circle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Avg Duration</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ avg_duration|round|int }}ms</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-danger">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">High Priority Issues</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ high_priority_count }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-danger text-white">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if not patterns %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body text-center py-5">
+                <div class="mb-3">
+                    <i class="fas fa-chart-line fa-3x text-muted"></i>
+                </div>
+                <h4 class="text-muted">No Query Patterns Found</h4>
+                <p class="text-muted">
+                    No slow queries available for analysis. Upload log files or check if slow queries exist.
+                </p>
+                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                    <i class="fas fa-upload me-2"></i>Upload Logs
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+
+<!-- Query Pattern Analysis Table -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-bar me-2"></i>Query Pattern Performance Analysis
+                    <small class="text-muted ms-2">(Sorted by total impact: avg duration × execution count)</small>
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm">
+                        <thead class="table-primary">
+                            <tr>
+                                <th style="color: #000; font-weight: bold;">Priority</th>
+                                <th style="color: #000; font-weight: bold;">Collection</th>
+                                <th style="color: #000; font-weight: bold;">Type</th>
+                                <th style="color: #000; font-weight: bold;">Plan</th>
+                                <th style="color: #000; font-weight: bold;">Executions</th>
+                                <th style="color: #000; font-weight: bold;">Avg Duration</th>
+                                <th style="color: #000; font-weight: bold;">Min/Max</th>
+                                <th style="color: #000; font-weight: bold;">Selectivity</th>
+                                <th class="actions-header" style="color: #000; font-weight: bold;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for pattern_key, pattern in patterns.items() %}
+                            <tr>
+                                <td>
+                                    {% if pattern.optimization_potential == 'high' %}
+                                        <span class="badge bg-danger">High</span>
+                                    {% elif pattern.optimization_potential == 'medium' %}
+                                        <span class="badge bg-warning">Medium</span>
+                                    {% else %}
+                                        <span class="badge bg-success">Low</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <div>
+                                        <strong>{{ pattern.database }}.{{ pattern.collection }}</strong>
+                                        <br>
+                                        <small class="text-muted">Hash: {{ pattern.query_hash[:8] }}...</small>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="badge bg-info">{{ pattern.query_type }}</span>
+                                </td>
+                                <td>
+                                    {% if pattern.plan_summary == 'COLLSCAN' %}
+                                        <span class="badge bg-danger">{{ pattern.plan_summary }}</span>
+                                    {% elif pattern.plan_summary == 'IXSCAN' %}
+                                        <span class="badge bg-success">{{ pattern.plan_summary }}</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ pattern.plan_summary }}</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-center">
+                                    <strong>{{ pattern.total_count }}</strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        {{ ((pattern.last_seen - pattern.first_seen).total_seconds() / 3600)|round(1) if pattern.first_seen and pattern.last_seen else 0 }}h span
+                                    </small>
+                                </td>
+                                <td class="text-center">
+                                    <strong>{{ pattern.avg_duration|round|int }}ms</strong>
+                                </td>
+                                <td class="text-center">
+                                    <div class="text-success">{{ pattern.min_duration|round|int }}ms</div>
+                                    <div class="text-danger">{{ pattern.max_duration|round|int }}ms</div>
+                                </td>
+                                <td class="text-center">
+                                    {% if pattern.avg_selectivity > 0 %}
+                                        <div>{{ pattern.avg_selectivity|round(1) }}%</div>
+                                        <small class="text-muted">
+                                            {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
+                                        </small>
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td class="actions-column">
+                                    <button class="btn btn-sm btn-outline-primary view-details-btn action-btn" 
+                                            data-bs-toggle="modal" 
+                                            data-bs-target="#patternModal"
+                                            data-pattern-key="{{ pattern_key }}"
+                                            data-collection="{{ pattern.database }}.{{ pattern.collection }}"
+                                            data-query-type="{{ pattern.query_type }}"
+                                            data-plan-summary="{{ pattern.plan_summary }}"
+                                            data-query-hash="{{ pattern.query_hash }}"
+                                                            data-executions="{{ pattern.total_count }}"
+                                            data-avg-duration="{{ pattern.avg_duration|round|int }}"
+                                            data-min-duration="{{ pattern.min_duration|round|int }}"
+                                            data-max-duration="{{ pattern.max_duration|round|int }}"
+                                            data-selectivity="{{ pattern.avg_selectivity|round(1) }}"
+                                            data-total-returned="{{ pattern.total_returned }}"
+                                            data-total-docs-examined="{{ pattern.total_docs_examined }}"
+                                            data-index-efficiency="{{ pattern.avg_index_efficiency|round(1) }}"
+                                            data-optimization-potential="{{ pattern.optimization_potential }}"
+                                            data-sample-query="{{ pattern.sample_query|e }}"
+                                            title="View Details">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pattern Details Modal -->
+<div class="modal fade" id="patternModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Query Pattern Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-info-circle me-2"></i>Pattern Information</h6>
+                        <table class="table table-sm">
+                            <tr><td><strong>Collection:</strong></td><td id="modalCollection"></td></tr>
+                            <tr><td><strong>Query Type:</strong></td><td id="modalQueryType"></td></tr>
+                            <tr><td><strong>Plan Summary:</strong></td><td id="modalPlanSummary"></td></tr>
+                            <tr><td><strong>Query Hash:</strong></td><td id="modalQueryHash"></td></tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-clock me-2"></i>Performance Statistics</h6>
+                        <table class="table table-sm">
+                            <tr><td><strong>Total Executions:</strong></td><td id="modalExecutions"></td></tr>
+                            <tr><td><strong>Avg Duration:</strong></td><td id="modalAvgDuration"></td></tr>
+                            <tr><td><strong>Min/Max Duration:</strong></td><td id="modalMinMaxDuration"></td></tr>
+                        </table>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <h6><i class="fas fa-chart-pie me-2"></i>Efficiency Metrics</h6>
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="card">
+                                    <div class="card-body text-center">
+                                        <div class="h4 mb-0" id="modalSelectivity">-</div>
+                                        <small class="text-muted">Selectivity</small>
+                                        <div><small id="modalSelectivityDetail">-</small></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card">
+                                    <div class="card-body text-center">
+                                        <div class="h4 mb-0" id="modalIndexEfficiency">-</div>
+                                        <small class="text-muted">Index Efficiency</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card">
+                                    <div class="card-body text-center">
+                                        <div class="h4 mb-0" id="modalOptimizationPotential">-</div>
+                                        <small class="text-muted">Optimization Potential</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <h6><i class="fas fa-code me-2"></i>Sample Query</h6>
+                    <pre id="modalSampleQuery" class="bg-light p-3 rounded" style="max-height: 200px; overflow-y: auto; font-size: 12px;"></pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="copyPatternQuery()">
+                    <i class="fas fa-copy me-2"></i>Copy Query
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Modal functionality
+    const patternModal = document.getElementById('patternModal');
+    const viewDetailsButtons = document.querySelectorAll('.view-details-btn');
+    
+    let currentPatternQuery = '';
+    
+    viewDetailsButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            // Get data from individual attributes
+            const collection = this.getAttribute('data-collection');
+            const queryType = this.getAttribute('data-query-type');
+            const planSummary = this.getAttribute('data-plan-summary');
+            const queryHash = this.getAttribute('data-query-hash');
+            const executions = this.getAttribute('data-executions');
+            const avgDuration = this.getAttribute('data-avg-duration');
+            const minDuration = this.getAttribute('data-min-duration');
+            const maxDuration = this.getAttribute('data-max-duration');
+            const selectivity = parseFloat(this.getAttribute('data-selectivity'));
+            const totalReturned = this.getAttribute('data-total-returned');
+            const totalDocsExamined = this.getAttribute('data-total-docs-examined');
+            const indexEfficiency = parseFloat(this.getAttribute('data-index-efficiency'));
+            const optimizationPotential = this.getAttribute('data-optimization-potential');
+            const sampleQuery = this.getAttribute('data-sample-query');
+            
+            // Populate modal with pattern data
+            document.getElementById('modalCollection').textContent = collection;
+            document.getElementById('modalQueryType').innerHTML = `<span class="badge bg-info">${queryType}</span>`;
+            
+            const planBadgeClass = planSummary === 'COLLSCAN' ? 'bg-danger' : 
+                                  planSummary === 'IXSCAN' ? 'bg-success' : 'bg-secondary';
+            document.getElementById('modalPlanSummary').innerHTML = `<span class="badge ${planBadgeClass}">${planSummary}</span>`;
+            
+            document.getElementById('modalQueryHash').textContent = queryHash;
+            
+            // Performance statistics
+            document.getElementById('modalExecutions').textContent = executions;
+            document.getElementById('modalAvgDuration').textContent = `${avgDuration}ms`;
+            document.getElementById('modalMinMaxDuration').textContent = `${minDuration}ms / ${maxDuration}ms`;
+            
+            // Efficiency metrics
+            if (selectivity > 0) {
+                document.getElementById('modalSelectivity').textContent = `${selectivity}%`;
+                document.getElementById('modalSelectivityDetail').textContent = `${totalReturned}/${totalDocsExamined} docs`;
+            } else {
+                document.getElementById('modalSelectivity').textContent = 'N/A';
+                document.getElementById('modalSelectivityDetail').textContent = '';
+            }
+            
+            document.getElementById('modalIndexEfficiency').textContent = indexEfficiency > 0 ? 
+                `${indexEfficiency}%` : 'N/A';
+            
+            const potentialBadgeClass = optimizationPotential === 'high' ? 'bg-danger' : 
+                                       optimizationPotential === 'medium' ? 'bg-warning' : 'bg-success';
+            document.getElementById('modalOptimizationPotential').innerHTML = `<span class="badge ${potentialBadgeClass}">${optimizationPotential}</span>`;
+            
+            // Sample query
+            document.getElementById('modalSampleQuery').textContent = sampleQuery;
+            currentPatternQuery = sampleQuery;
+        });
+    });
+    
+    // Export functionality
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function() {
+            const exportUrl = '{{ url_for("export_query_analysis") }}';
+            window.open(exportUrl, '_blank');
+        });
+    }
+});
+
+// Copy query function
+function copyPatternQuery() {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(currentPatternQuery).then(function() {
+            const btn = event.target.closest('button');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-primary');
+            }, 2000);
+        }).catch(function(err) {
+            console.error('Copy failed:', err);
+            alert('Copy failed. Please select and copy manually.');
+        });
+    } else {
+        alert('Copy functionality not supported in this browser.');
+    }
+}
+</script>
+
+{% endblock %}

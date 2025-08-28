@@ -420,6 +420,7 @@ class MongoLogAnalyzer:
                 # Check if it's a slow query
                 if duration > 100:  # Consider queries > 100ms as slow
                     plan_summary = attr.get('planSummary', 'None')
+                    query_hash = attr.get('queryHash', None)
                     self.slow_queries.append({
                         'timestamp': timestamp,
                         'connection_id': conn_id,
@@ -428,6 +429,7 @@ class MongoLogAnalyzer:
                         'collection': collection,
                         'query': json.dumps(command_info, indent=None),
                         'plan_summary': plan_summary,
+                        'query_hash': query_hash,
                         'username': None,  # Will be filled by correlation
                         'file_path': filepath,
                         'line_number': line_num
@@ -497,6 +499,7 @@ class MongoLogAnalyzer:
                         query_data = {"description": f"Query on {database}.{collection}"}
                     
                     if duration > 100:  # Only add if it's actually slow
+                        query_hash = attr.get('queryHash', None)
                         self.slow_queries.append({
                             'timestamp': timestamp,
                             'connection_id': conn_id,
@@ -505,6 +508,7 @@ class MongoLogAnalyzer:
                             'collection': collection,
                             'query': json.dumps(query_data, indent=None),
                             'plan_summary': plan_summary,
+                            'query_hash': query_hash,
                             'username': None,  # Will be filled by correlation
                             'file_path': filepath,
                             'line_number': line_num
@@ -674,7 +678,10 @@ class MongoLogAnalyzer:
                         'duration': duration,
                         'database': database,
                         'collection': collection,
-                        'query': line
+                        'query': line,
+                        'query_hash': None,  # Legacy format - no hash available
+                        'file_path': filepath,
+                        'line_number': line_num
                     })
                     if file_summary:
                         file_summary['slow_query_events'] += 1
@@ -1060,6 +1067,423 @@ class MongoLogAnalyzer:
             messages.append(f"ℹ️ Skipped {summary['skipped_lines']} empty lines")
             
         return messages
+    
+    def analyze_index_suggestions(self):
+        """Analyze COLLSCAN queries and generate index suggestions for high-accuracy scenarios"""
+        import re
+        from collections import defaultdict
+        
+        suggestions = defaultdict(lambda: {
+            'collection_name': '',
+            'suggestions': [],
+            'collscan_queries': 0,
+            'total_docs_examined': 0,
+            'avg_duration': 0,
+            'sample_queries': []
+        })
+        
+        # Analyze each slow query
+        for query in self.slow_queries:
+            if query.get('plan_summary') != 'COLLSCAN':
+                continue
+                
+            db_collection = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}"
+            suggestions[db_collection]['collection_name'] = db_collection
+            suggestions[db_collection]['collscan_queries'] += 1
+            suggestions[db_collection]['total_docs_examined'] += self._get_docs_examined(query)
+            suggestions[db_collection]['avg_duration'] += query.get('duration', 0)
+            
+            # Store sample query for analysis
+            if len(suggestions[db_collection]['sample_queries']) < 3:
+                suggestions[db_collection]['sample_queries'].append({
+                    'query': query.get('query', ''),
+                    'duration': query.get('duration', 0),
+                    'timestamp': query.get('timestamp')
+                })
+            
+            # Parse query for index suggestions
+            query_str = query.get('query', '')
+            parsed_suggestions = self._extract_index_suggestions(query_str, query.get('collection', 'unknown'))
+            
+            # Add unique suggestions
+            for suggestion in parsed_suggestions:
+                if suggestion not in suggestions[db_collection]['suggestions']:
+                    suggestions[db_collection]['suggestions'].append(suggestion)
+        
+        # Calculate averages and finalize
+        for collection, data in suggestions.items():
+            if data['collscan_queries'] > 0:
+                data['avg_duration'] = data['avg_duration'] / data['collscan_queries']
+                data['avg_docs_per_query'] = data['total_docs_examined'] / data['collscan_queries']
+        
+        return dict(suggestions)
+    
+    def _get_docs_examined(self, query):
+        """Extract docsExamined from query data"""
+        try:
+            # Try to parse from the original log line if available
+            original_line = self.get_original_log_line(query.get('file_path'), query.get('line_number'))
+            if original_line:
+                original_json = json.loads(original_line)
+                return original_json.get('attr', {}).get('docsExamined', 0)
+        except:
+            pass
+        return 0
+    
+    def _extract_index_suggestions(self, query_str, collection_name):
+        """Extract index suggestions from query string for high-accuracy scenarios"""
+        suggestions = []
+        
+        try:
+            # Parse the query JSON
+            if query_str.startswith('{') and query_str.endswith('}'):
+                query_obj = json.loads(query_str)
+            else:
+                return suggestions
+            
+            # Handle different query types
+            if 'find' in query_obj:
+                suggestions.extend(self._analyze_find_query(query_obj, collection_name))
+            elif 'aggregate' in query_obj:
+                suggestions.extend(self._analyze_aggregate_query(query_obj, collection_name))
+            
+        except json.JSONDecodeError:
+            pass
+        except Exception:
+            pass
+            
+        return suggestions
+    
+    def _analyze_find_query(self, query_obj, collection_name):
+        """Analyze find queries for index suggestions"""
+        suggestions = []
+        
+        # Extract filter conditions
+        filter_obj = query_obj.get('filter', {})
+        sort_obj = query_obj.get('sort', {})
+        
+        # Single field indexes for filter conditions
+        for field, value in filter_obj.items():
+            if field not in ['$and', '$or', '$nor']:  # Skip complex operators
+                suggestions.append({
+                    'type': 'single_field',
+                    'index': f'{{{field}: 1}}',
+                    'reason': f'Filter on {field}',
+                    'priority': 'high',
+                    'command': f'db.{collection_name}.createIndex({{{field}: 1}})'
+                })
+        
+        # Sort indexes
+        if sort_obj:
+            sort_fields = []
+            for field, direction in sort_obj.items():
+                sort_fields.append(f'{field}: {direction}')
+            
+            if len(sort_fields) == 1:
+                field, direction = list(sort_obj.items())[0]
+                suggestions.append({
+                    'type': 'sort',
+                    'index': f'{{{field}: {direction}}}',
+                    'reason': f'Sort by {field}',
+                    'priority': 'high',
+                    'command': f'db.{collection_name}.createIndex({{{field}: {direction}}})'
+                })
+            elif len(sort_fields) <= 3:  # Compound sort index
+                index_spec = ', '.join(sort_fields)
+                suggestions.append({
+                    'type': 'compound_sort',
+                    'index': f'{{{index_spec}}}',
+                    'reason': f'Compound sort on {", ".join([f.split(":")[0] for f in sort_fields])}',
+                    'priority': 'medium',
+                    'command': f'db.{collection_name}.createIndex({{{index_spec}}})'
+                })
+        
+        # Compound index for filter + sort (if both exist and simple)
+        if filter_obj and sort_obj and len(filter_obj) == 1 and len(sort_obj) == 1:
+            filter_field = list(filter_obj.keys())[0]
+            sort_field, sort_dir = list(sort_obj.items())[0]
+            if filter_field != sort_field:
+                suggestions.append({
+                    'type': 'compound_filter_sort',
+                    'index': f'{{{filter_field}: 1, {sort_field}: {sort_dir}}}',
+                    'reason': f'Filter on {filter_field} and sort by {sort_field}',
+                    'priority': 'high',
+                    'command': f'db.{collection_name}.createIndex({{{filter_field}: 1, {sort_field}: {sort_dir}}})'
+                })
+        
+        return suggestions
+    
+    def _analyze_aggregate_query(self, query_obj, collection_name):
+        """Analyze aggregate queries for basic index suggestions"""
+        suggestions = []
+        
+        pipeline = query_obj.get('pipeline', [])
+        
+        for stage in pipeline:
+            # Analyze $match stages
+            if '$match' in stage:
+                match_obj = stage['$match']
+                # Only handle simple match conditions (not empty matches)
+                if match_obj:  # Skip empty matches like {"$match": {}}
+                    for field, value in match_obj.items():
+                        if field not in ['$and', '$or', '$nor', '$expr']:  # Skip complex operators
+                            suggestions.append({
+                                'type': 'aggregate_match',
+                                'index': f'{{{field}: 1}}',
+                                'reason': f'$match stage filter on {field}',
+                                'priority': 'high',
+                                'command': f'db.{collection_name}.createIndex({{{field}: 1}})'
+                            })
+            
+            # Analyze $sort stages
+            elif '$sort' in stage:
+                sort_obj = stage['$sort']
+                if len(sort_obj) == 1:
+                    field, direction = list(sort_obj.items())[0]
+                    suggestions.append({
+                        'type': 'aggregate_sort',
+                        'index': f'{{{field}: {direction}}}',
+                        'reason': f'$sort stage on {field}',
+                        'priority': 'high',
+                        'command': f'db.{collection_name}.createIndex({{{field}: {direction}}})'
+                    })
+        
+        return suggestions
+    
+    def analyze_query_patterns(self):
+        """Analyze slow query patterns for statistical analysis"""
+        from collections import defaultdict
+        import statistics
+        
+        patterns = defaultdict(lambda: {
+            'query_hash': '',
+            'plan_cache_key': '',
+            'collection': '',
+            'database': '',
+            'query_type': '',
+            'plan_summary': '',
+            'executions': [],
+            'total_count': 0,
+            'avg_duration': 0,
+            'min_duration': 0,
+            'max_duration': 0,
+            'median_duration': 0,
+            'total_docs_examined': 0,
+            'total_keys_examined': 0,
+            'total_returned': 0,
+            'avg_selectivity': 0,
+            'avg_index_efficiency': 0,
+            'sample_query': '',
+            'first_seen': None,
+            'last_seen': None,
+            'complexity_score': 0,
+            'optimization_potential': 'low'
+        })
+        
+        # Extract query hash and performance data from original log lines
+        for query in self.slow_queries:
+            query_hash = self._extract_query_hash(query)
+            if not query_hash:
+                # Use a combination of database, collection, and query as fallback
+                query_str = query.get('query', '')[:50]  # First 50 chars of query
+                query_hash = f"fallback_{query.get('database', 'unknown')}_{query.get('collection', 'unknown')}_{hash(query_str) % 10000}"
+                
+            pattern_key = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}_{query_hash}_{query.get('plan_summary', 'None')}"
+            pattern = patterns[pattern_key]
+            
+            # Get detailed metrics from original log line
+            metrics = self._extract_detailed_metrics(query)
+            
+            # Initialize pattern metadata if first occurrence
+            if pattern['total_count'] == 0:
+                pattern['query_hash'] = query_hash
+                pattern['plan_cache_key'] = metrics.get('planCacheKey', query_hash)
+                pattern['collection'] = query.get('collection', 'unknown')
+                pattern['database'] = query.get('database', 'unknown')
+                pattern['query_type'] = self._determine_query_type(query.get('query', ''))
+                pattern['plan_summary'] = query.get('plan_summary', 'None')
+                pattern['sample_query'] = query.get('query', '')[:200] + ('...' if len(query.get('query', '')) > 200 else '')
+                pattern['first_seen'] = query.get('timestamp')
+                pattern['complexity_score'] = self._calculate_complexity_score(query.get('query', ''))
+            
+            # Add execution data
+            execution = {
+                'duration': query.get('duration', 0),
+                'docs_examined': metrics.get('docsExamined', 0),
+                'keys_examined': metrics.get('keysExamined', 0),
+                'returned': metrics.get('nReturned', 0),
+                'cpu_nanos': metrics.get('cpuNanos', 0),
+                'timestamp': query.get('timestamp')
+            }
+            
+            pattern['executions'].append(execution)
+            pattern['total_count'] += 1
+            pattern['last_seen'] = query.get('timestamp')
+        
+        # Calculate statistics for each pattern
+        for pattern_key, pattern in patterns.items():
+            if pattern['total_count'] == 0:
+                continue
+                
+            durations = [exec['duration'] for exec in pattern['executions']]
+            docs_examined = [exec['docs_examined'] for exec in pattern['executions']]
+            keys_examined = [exec['keys_examined'] for exec in pattern['executions']]
+            returned = [exec['returned'] for exec in pattern['executions']]
+            
+            # Duration statistics
+            pattern['avg_duration'] = statistics.mean(durations)
+            pattern['min_duration'] = min(durations)
+            pattern['max_duration'] = max(durations)
+            pattern['median_duration'] = statistics.median(durations)
+            
+            # Efficiency metrics
+            pattern['total_docs_examined'] = sum(docs_examined)
+            pattern['total_keys_examined'] = sum(keys_examined) 
+            pattern['total_returned'] = sum(returned)
+            
+            # Calculate selectivity (docs returned / docs examined)
+            if pattern['total_docs_examined'] > 0:
+                pattern['avg_selectivity'] = (pattern['total_returned'] / pattern['total_docs_examined']) * 100
+            
+            # Calculate index efficiency (keys examined / docs examined)  
+            if pattern['total_docs_examined'] > 0:
+                pattern['avg_index_efficiency'] = (pattern['total_keys_examined'] / pattern['total_docs_examined']) * 100
+            
+            # Determine optimization potential
+            pattern['optimization_potential'] = self._assess_optimization_potential(pattern)
+        
+        # Sort patterns by total execution time (impact)
+        sorted_patterns = dict(sorted(patterns.items(), 
+                                    key=lambda x: x[1]['avg_duration'] * x[1]['total_count'], 
+                                    reverse=True))
+        
+        return sorted_patterns
+    
+    def _extract_query_hash(self, query):
+        """Extract queryHash from original log line"""
+        try:
+            original_line = self.get_original_log_line(query.get('file_path'), query.get('line_number'))
+            if original_line:
+                original_json = json.loads(original_line)
+                query_hash = original_json.get('attr', {}).get('queryHash')
+                if query_hash:
+                    return query_hash
+        except Exception:
+            pass
+        return None  # Return None to trigger fallback hash generation
+    
+    def _extract_detailed_metrics(self, query):
+        """Extract detailed metrics from original log line"""
+        try:
+            original_line = self.get_original_log_line(query.get('file_path'), query.get('line_number'))
+            if original_line:
+                original_json = json.loads(original_line)
+                attr = original_json.get('attr', {})
+                return {
+                    'docsExamined': attr.get('docsExamined', 0),
+                    'keysExamined': attr.get('keysExamined', 0),
+                    'nReturned': attr.get('nReturned', 0),
+                    'cpuNanos': attr.get('cpuNanos', 0),
+                    'planCacheKey': attr.get('planCacheKey', ''),
+                    'queryFramework': attr.get('queryFramework', ''),
+                    'readConcern': attr.get('readConcern', {}),
+                    'writeConcern': attr.get('writeConcern', {})
+                }
+        except:
+            pass
+        return {}
+    
+    def _determine_query_type(self, query_str):
+        """Determine query type from query string"""
+        try:
+            if query_str:
+                query_obj = json.loads(query_str)
+                if 'find' in query_obj:
+                    return 'find'
+                elif 'aggregate' in query_obj:
+                    return 'aggregate'
+                elif 'update' in query_obj:
+                    return 'update'
+                elif 'delete' in query_obj:
+                    return 'delete'
+                elif 'count' in query_obj:
+                    return 'count'
+        except:
+            pass
+        return 'unknown'
+    
+    def _calculate_complexity_score(self, query_str):
+        """Calculate query complexity score (1-10 scale)"""
+        score = 1
+        try:
+            if query_str:
+                query_obj = json.loads(query_str)
+                
+                # Aggregate pipeline complexity
+                if 'aggregate' in query_obj:
+                    pipeline = query_obj.get('pipeline', [])
+                    score += len(pipeline)  # +1 per stage
+                    
+                    for stage in pipeline:
+                        if '$lookup' in stage:
+                            score += 2  # Joins are expensive
+                        if '$group' in stage:
+                            score += 1
+                        if '$sort' in stage:
+                            score += 1
+                        if '$match' in stage:
+                            match_obj = stage['$match']
+                            if '$or' in match_obj or '$and' in match_obj:
+                                score += 1  # Complex conditions
+                
+                # Find query complexity
+                elif 'find' in query_obj:
+                    if 'filter' in query_obj:
+                        filter_obj = query_obj['filter']
+                        score += len(filter_obj)  # +1 per filter condition
+                    if 'sort' in query_obj:
+                        score += 1
+                    
+        except:
+            pass
+        
+        return min(score, 10)  # Cap at 10
+    
+    def _assess_optimization_potential(self, pattern):
+        """Assess optimization potential based on pattern characteristics"""
+        score = 0
+        
+        # High duration variance suggests inconsistent performance (using min/max range instead)
+        duration_range = pattern['max_duration'] - pattern['min_duration']
+        if duration_range > pattern['avg_duration'] * 0.5:
+            score += 2
+        
+        # COLLSCAN is always high optimization potential
+        if pattern['plan_summary'] == 'COLLSCAN':
+            score += 3
+        
+        # High docs examined vs returned ratio
+        if pattern['avg_selectivity'] < 10:  # Less than 10% selectivity
+            score += 2
+        
+        # Frequent execution
+        if pattern['total_count'] >= 10:
+            score += 1
+        
+        # High average duration
+        if pattern['avg_duration'] > 1000:  # > 1 second
+            score += 2
+        
+        # High complexity
+        if pattern['complexity_score'] >= 7:
+            score += 1
+        
+        if score >= 6:
+            return 'high'
+        elif score >= 3:
+            return 'medium'
+        else:
+            return 'low'
 
 analyzer = MongoLogAnalyzer()
 
@@ -1204,6 +1628,7 @@ def slow_queries():
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
+    selected_plan = request.args.get('plan_summary', 'all')
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
@@ -1237,6 +1662,16 @@ def slow_queries():
             continue
         if end_date and query['timestamp'] > end_date:
             continue
+        
+        # Plan summary filter
+        if selected_plan != 'all':
+            query_plan = query.get('plan_summary', 'None')
+            if selected_plan == 'COLLSCAN' and query_plan != 'COLLSCAN':
+                continue
+            elif selected_plan == 'IXSCAN' and query_plan != 'IXSCAN':
+                continue
+            elif selected_plan == 'other' and query_plan in ['COLLSCAN', 'IXSCAN']:
+                continue
             
         filtered_queries.append(query)
     
@@ -1248,6 +1683,7 @@ def slow_queries():
                          databases=sorted(databases),
                          selected_db=selected_db,
                          threshold=threshold,
+                         selected_plan=selected_plan,
                          start_date=start_date_str,
                          end_date=end_date_str,
                          total_queries=len(filtered_queries))
@@ -1260,6 +1696,7 @@ def export_slow_queries():
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
+    selected_plan = request.args.get('plan_summary', 'all')
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
@@ -1293,6 +1730,16 @@ def export_slow_queries():
             continue
         if end_date and query['timestamp'] > end_date:
             continue
+        
+        # Plan summary filter
+        if selected_plan != 'all':
+            query_plan = query.get('plan_summary', 'None')
+            if selected_plan == 'COLLSCAN' and query_plan != 'COLLSCAN':
+                continue
+            elif selected_plan == 'IXSCAN' and query_plan != 'IXSCAN':
+                continue
+            elif selected_plan == 'other' and query_plan in ['COLLSCAN', 'IXSCAN']:
+                continue
             
         filtered_queries.append(query)
     
@@ -1462,6 +1909,157 @@ def export_search_results():
     # Generate filename
     search_term = keyword or f"{field_name}_{field_value}" or "search"
     filename = f"mongodb_search_{search_term.replace(' ', '_').replace(':', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    response = Response(export_content, mimetype='application/json')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    
+    return response
+
+@app.route('/index-suggestions')
+def index_suggestions():
+    # Ensure user correlation is done before analysis
+    analyzer.correlate_users_with_access()
+    
+    # Analyze index suggestions
+    suggestions = analyzer.analyze_index_suggestions()
+    
+    # Calculate summary statistics
+    total_collscan_queries = sum(data['collscan_queries'] for data in suggestions.values())
+    total_suggestions = sum(len(data['suggestions']) for data in suggestions.values())
+    
+    # Calculate average docs examined across all COLLSCAN queries
+    total_docs_examined = sum(data['total_docs_examined'] for data in suggestions.values())
+    avg_docs_examined = total_docs_examined / total_collscan_queries if total_collscan_queries > 0 else 0
+    
+    return render_template('index_suggestions.html',
+                         suggestions=suggestions,
+                         total_collscan_queries=total_collscan_queries,
+                         total_suggestions=total_suggestions,
+                         avg_docs_examined=avg_docs_examined)
+
+@app.route('/export-index-suggestions')
+def export_index_suggestions():
+    # Ensure user correlation is done before analysis
+    analyzer.correlate_users_with_access()
+    
+    # Analyze index suggestions
+    suggestions = analyzer.analyze_index_suggestions()
+    
+    # Create export content with all index creation commands
+    export_data = {
+        'generated_on': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'total_collections': len(suggestions),
+        'index_commands': []
+    }
+    
+    for collection_name, data in suggestions.items():
+        collection_commands = {
+            'collection': collection_name,
+            'collscan_queries': data['collscan_queries'],
+            'avg_duration_ms': round(data['avg_duration']),
+            'commands': []
+        }
+        
+        for suggestion in data['suggestions']:
+            collection_commands['commands'].append({
+                'priority': suggestion['priority'],
+                'reason': suggestion['reason'],
+                'command': suggestion['command']
+            })
+        
+        if collection_commands['commands']:  # Only include collections with suggestions
+            export_data['index_commands'].append(collection_commands)
+    
+    export_content = json.dumps(export_data, indent=2, default=str)
+    
+    # Generate filename
+    filename = f"mongodb_index_suggestions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    response = Response(export_content, mimetype='application/json')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    
+    return response
+
+@app.route('/slow-query-analysis')
+def slow_query_analysis():
+    # Ensure user correlation is done before analysis
+    analyzer.correlate_users_with_access()
+    
+    # Analyze query patterns
+    patterns = analyzer.analyze_query_patterns()
+    
+    # Calculate summary statistics
+    total_executions = sum(pattern['total_count'] for pattern in patterns.values())
+    high_priority_count = sum(1 for pattern in patterns.values() if pattern['optimization_potential'] == 'high')
+    
+    # Calculate overall average duration
+    if total_executions > 0:
+        total_duration = sum(pattern['avg_duration'] * pattern['total_count'] for pattern in patterns.values())
+        avg_duration = total_duration / total_executions
+    else:
+        avg_duration = 0
+    
+    return render_template('slow_query_analysis.html',
+                         patterns=patterns,
+                         total_executions=total_executions,
+                         avg_duration=avg_duration,
+                         high_priority_count=high_priority_count)
+
+@app.route('/export-query-analysis')
+def export_query_analysis():
+    # Ensure user correlation is done before analysis
+    analyzer.correlate_users_with_access()
+    
+    # Analyze query patterns
+    patterns = analyzer.analyze_query_patterns()
+    
+    # Create export data
+    export_data = {
+        'generated_on': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'total_patterns': len(patterns),
+        'summary': {
+            'total_executions': sum(pattern['total_count'] for pattern in patterns.values()),
+            'high_priority_issues': sum(1 for pattern in patterns.values() if pattern['optimization_potential'] == 'high'),
+            'avg_duration_ms': sum(pattern['avg_duration'] * pattern['total_count'] for pattern in patterns.values()) / sum(pattern['total_count'] for pattern in patterns.values()) if patterns else 0
+        },
+        'patterns': []
+    }
+    
+    for pattern_key, pattern in patterns.items():
+        pattern_export = {
+            'pattern_key': pattern_key,
+            'database': pattern['database'],
+            'collection': pattern['collection'],
+            'query_hash': pattern['query_hash'],
+            'query_type': pattern['query_type'],
+            'plan_summary': pattern['plan_summary'],
+            'complexity_score': pattern['complexity_score'],
+            'optimization_potential': pattern['optimization_potential'],
+            'performance_stats': {
+                'total_executions': pattern['total_count'],
+                'avg_duration_ms': round(pattern['avg_duration']),
+                'min_duration_ms': round(pattern['min_duration']),
+                'max_duration_ms': round(pattern['max_duration']),
+                'median_duration_ms': round(pattern['median_duration'])
+            },
+            'efficiency_metrics': {
+                'total_docs_examined': pattern['total_docs_examined'],
+                'total_keys_examined': pattern['total_keys_examined'],
+                'total_returned': pattern['total_returned'],
+                'avg_selectivity_percent': round(pattern['avg_selectivity'], 2),
+                'avg_index_efficiency_percent': round(pattern['avg_index_efficiency'], 2)
+            },
+            'sample_query': pattern['sample_query'],
+            'first_seen': pattern['first_seen'].isoformat() if pattern['first_seen'] else None,
+            'last_seen': pattern['last_seen'].isoformat() if pattern['last_seen'] else None
+        }
+        
+        export_data['patterns'].append(pattern_export)
+    
+    export_content = json.dumps(export_data, indent=2, default=str)
+    
+    # Generate filename
+    filename = f"mongodb_query_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
     response = Response(export_content, mimetype='application/json')
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'

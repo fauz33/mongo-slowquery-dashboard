@@ -1,15 +1,18 @@
 {% extends "base.html" %}
 
-{% block title %}Slow Query Analysis - MongoDB Log Analyzer{% endblock %}
+{% block title %}List of Slow Queries - MongoDB Log Analyzer{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
-    <h1 class="h2">Slow Query Analysis</h1>
+    <h1 class="h2">List of Slow Queries</h1>
     <div class="btn-toolbar mb-2 mb-md-0">
         <div class="btn-group me-2">
             <button type="button" class="btn btn-sm btn-success" id="exportBtn">
                 <i class="fas fa-download me-2"></i>Export Results
             </button>
+            <a href="{{ url_for('slow_query_analysis') }}" class="btn btn-sm btn-primary">
+                <i class="fas fa-chart-line me-2"></i>Query Analysis
+            </a>
             <a href="{{ url_for('search_logs') }}" class="btn btn-sm btn-info">
                 <i class="fas fa-search me-2"></i>Search Logs
             </a>
@@ -43,15 +46,24 @@
                         <input type="number" class="form-control" id="threshold" name="threshold" 
                                value="{{ threshold }}" min="1" step="1" placeholder="100">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <label for="start_date" class="form-label">Start Date</label>
                         <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
                                value="{{ start_date or '' }}">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <label for="end_date" class="form-label">End Date</label>
                         <input type="datetime-local" class="form-control" id="end_date" name="end_date" 
                                value="{{ end_date or '' }}">
+                    </div>
+                    <div class="col-md-2">
+                        <label for="plan_summary" class="form-label">Plan Summary</label>
+                        <select class="form-select" id="plan_summary" name="plan_summary">
+                            <option value="all" {% if selected_plan == 'all' %}selected{% endif %}>All Plans</option>
+                            <option value="COLLSCAN" {% if selected_plan == 'COLLSCAN' %}selected{% endif %}>COLLSCAN</option>
+                            <option value="IXSCAN" {% if selected_plan == 'IXSCAN' %}selected{% endif %}>IXSCAN</option>
+                            <option value="other" {% if selected_plan == 'other' %}selected{% endif %}>Other</option>
+                        </select>
                     </div>
                     <div class="col-md-12 d-flex align-items-end mt-2">
                         <button type="submit" class="btn btn-primary me-2">
@@ -173,6 +185,7 @@
                                     <th style="min-width: 100px; color: #000; font-weight: bold;">Duration</th>
                                     <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
                                     <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
+                                    <th style="min-width: 100px; color: #000; font-weight: bold;">Hash</th>
                                     <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
                                     <th style="min-width: 100px; color: #000; font-weight: bold;">User</th>
                                     <th style="min-width: 100px; color: #000; font-weight: bold;">Connection</th>
@@ -198,7 +211,18 @@
                                     </td>
                                     <td>{{ query.collection or 'unknown' }}</td>
                                     <td class="text-center">
-                                        {% if query.plan_summary and query.plan_summary != 'None' %}
+                                        {% if query.query_hash %}
+                                            <small class="text-muted font-monospace">{{ query.query_hash[:8] }}...</small>
+                                        {% else %}
+                                            <span class="badge bg-light text-muted">none</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-center">
+                                        {% if query.plan_summary == 'COLLSCAN' %}
+                                            <span class="badge bg-danger">{{ query.plan_summary }}</span>
+                                        {% elif query.plan_summary == 'IXSCAN' %}
+                                            <span class="badge bg-success">{{ query.plan_summary }}</span>
+                                        {% elif query.plan_summary and query.plan_summary != 'None' %}
                                             <span class="badge bg-secondary">{{ query.plan_summary }}</span>
                                         {% else %}
                                             <span class="badge bg-light text-dark">none</span>

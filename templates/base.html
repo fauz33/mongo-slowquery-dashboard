@@ -103,13 +103,23 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('slow_query_analysis') }}">
+                                <i class="fas fa-chart-line"></i> Slow Query Analysis
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('slow_queries') }}">
-                                <i class="fas fa-clock"></i> Slow Query Analysis
+                                <i class="fas fa-list"></i> List of Slow Queries
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('search_logs') }}">
                                 <i class="fas fa-search"></i> Search MongoDB Logs
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('index_suggestions') }}">
+                                <i class="fas fa-lightbulb"></i> Index Suggestions
                             </a>
                         </li>
                     </ul>
