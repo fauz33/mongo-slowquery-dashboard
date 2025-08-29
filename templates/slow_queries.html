@@ -457,17 +457,54 @@
                 <div class="mb-3">
                     <label class="form-label fw-bold">Pattern #<span id="queryNumber"></span> - Slowest Execution</label>
                     <pre id="fullQuery" class="bg-light p-3 rounded" style="white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto;"></pre>
-                    <small class="text-muted">You can select and copy the text above manually (Ctrl+C / Cmd+C)</small>
+                    <small class="text-muted">Click the copy button below or select and copy manually</small>
                 </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="copySlowQuery()">
+                    <i class="fas fa-copy me-2"></i>Copy Query
+                </button>
             </div>
         </div>
     </div>
 </div>
 
 <script>
+// Global variable for copy functionality
+let currentSlowQuery = '';
+
+// Copy query function
+function copySlowQuery() {
+    console.log('Copy button clicked, currentSlowQuery:', currentSlowQuery ? 'Query loaded' : 'Empty');
+    
+    if (!currentSlowQuery) {
+        alert('No query to copy. Please open a query details modal first.');
+        return;
+    }
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(currentSlowQuery).then(function() {
+            const btn = event.target.closest('button');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-primary');
+            }, 2000);
+        }).catch(function(err) {
+            console.error('Copy failed:', err);
+            alert('Copy failed. Please select and copy manually.');
+        });
+    } else {
+        alert('Copy functionality not supported in this browser. Please select and copy manually.');
+    }
+}
+
 // Simple approach using Bootstrap's built-in modal events
 document.addEventListener('DOMContentLoaded', function() {
     const queryModal = document.getElementById('queryModal');
@@ -502,10 +539,12 @@ document.addEventListener('DOMContentLoaded', function() {
             // Unique queries mode - show pattern details
             modalQueryNumber.textContent = `${queryNumber} (${executionCount} executions)`;
             modalQueryText.textContent = queryText;
+            currentSlowQuery = queryText; // Set for copy function
         } else {
             // All executions mode - show individual query
             modalQueryNumber.textContent = queryNumber;
             modalQueryText.textContent = queryText;
+            currentSlowQuery = queryText; // Set for copy function
         }
     });
     
@@ -538,7 +577,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Copy query function removed - users can manually select and copy text
+// Copy query function implemented above
 
 // Date range helper functions
 function setDateRange(range) {

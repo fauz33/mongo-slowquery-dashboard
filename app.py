@@ -1483,6 +1483,8 @@ class MongoLogAnalyzer:
             'avg_selectivity': 0,
             'avg_index_efficiency': 0,
             'sample_query': '',
+            'slowest_query_full': '',
+            'slowest_execution_timestamp': None,
             'first_seen': None,
             'last_seen': None,
             'complexity_score': 0,
@@ -1518,6 +1520,8 @@ class MongoLogAnalyzer:
                 pattern['query_type'] = self._determine_query_type(query.get('query', ''))
                 pattern['plan_summary'] = query.get('plan_summary', 'None')
                 pattern['sample_query'] = query.get('query', '')[:200] + ('...' if len(query.get('query', '')) > 200 else '')
+                pattern['slowest_query_full'] = query.get('query', '')
+                pattern['slowest_execution_timestamp'] = query.get('timestamp')
                 pattern['first_seen'] = query.get('timestamp')
                 pattern['complexity_score'] = self._calculate_complexity_score(query.get('query', ''))
                 pattern['is_estimated'] = is_estimated
@@ -1535,6 +1539,21 @@ class MongoLogAnalyzer:
             pattern['executions'].append(execution)
             pattern['total_count'] += 1
             pattern['last_seen'] = query.get('timestamp')
+            
+            # Update slowest query if this execution is slower, or if same duration but more recent
+            current_duration = query.get('duration', 0)
+            current_max_duration = max([exec['duration'] for exec in pattern['executions']])
+            
+            if (pattern['slowest_query_full'] == '' or 
+                current_duration >= current_max_duration):
+                # If tied on duration, prefer the most recent execution
+                if (current_duration == current_max_duration and 
+                    query.get('timestamp') and pattern.get('slowest_execution_timestamp') and
+                    query.get('timestamp') <= pattern.get('slowest_execution_timestamp')):
+                    pass  # Keep the current slowest (more recent)
+                else:
+                    pattern['slowest_query_full'] = query.get('query', '')
+                    pattern['slowest_execution_timestamp'] = query.get('timestamp')
         
         # Calculate statistics for each pattern
         for pattern_key, pattern in patterns.items():
@@ -1687,11 +1706,13 @@ class MongoLogAnalyzer:
     def _extract_detailed_metrics(self, query):
         """Extract detailed metrics from original log line or parsed data"""
         # First check if metrics are already available in the query object
-        if 'docsExamined' in query or 'nReturned' in query or 'keysExamined' in query:
+        if ('docsExamined' in query or 'docs_examined' in query or 
+            'nReturned' in query or 'n_returned' in query or 
+            'keysExamined' in query or 'keys_examined' in query):
             return {
-                'docsExamined': query.get('docsExamined', 0),
-                'keysExamined': query.get('keysExamined', 0), 
-                'nReturned': query.get('nReturned', 0),
+                'docsExamined': (query.get('docsExamined') or query.get('docs_examined') or 0),
+                'keysExamined': (query.get('keysExamined') or query.get('keys_examined') or 0), 
+                'nReturned': (query.get('nReturned') or query.get('n_returned') or 0),
                 'cpuNanos': query.get('cpuNanos', 0),
                 'planCacheKey': query.get('planCacheKey', ''),
                 'queryFramework': query.get('queryFramework', ''),
@@ -1709,6 +1730,7 @@ class MongoLogAnalyzer:
                 # Extract metrics with multiple possible field names
                 docs_examined = (
                     attr.get('docsExamined') or 
+                    attr.get('docs_examined') or
                     attr.get('totalDocsExamined') or 
                     attr.get('executionStats', {}).get('docsExamined') or
                     attr.get('command', {}).get('docsExamined') or 0
@@ -1716,6 +1738,7 @@ class MongoLogAnalyzer:
                 
                 keys_examined = (
                     attr.get('keysExamined') or 
+                    attr.get('keys_examined') or
                     attr.get('totalKeysExamined') or 
                     attr.get('executionStats', {}).get('keysExamined') or
                     attr.get('command', {}).get('keysExamined') or 0
@@ -1723,6 +1746,7 @@ class MongoLogAnalyzer:
                 
                 n_returned = (
                     attr.get('nReturned') or 
+                    attr.get('n_returned') or
                     attr.get('nreturned') or 
                     attr.get('numReturned') or 
                     attr.get('executionStats', {}).get('nReturned') or

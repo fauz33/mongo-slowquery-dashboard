@@ -318,8 +318,8 @@
                                     <div class="text-danger">{{ pattern.max_duration|round|int }}ms</div>
                                 </td>
                                 <td class="text-center">
-                                    {% if pattern.avg_selectivity > 0 %}
-                                        <div>{{ pattern.avg_selectivity|round(1) }}%</div>
+                                    {% if pattern.avg_selectivity is not none and pattern.avg_selectivity >= 0 %}
+                                        <div>{{ pattern.avg_selectivity|round(4) }}%</div>
                                         <small class="text-muted">
                                             {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
                                             {% if pattern.get('is_estimated') %}
@@ -348,7 +348,7 @@
                                             data-total-docs-examined="{{ pattern.total_docs_examined }}"
                                             data-index-efficiency="{{ pattern.avg_index_efficiency|round(1) }}"
                                             data-optimization-potential="{{ pattern.optimization_potential }}"
-                                            data-sample-query="{{ pattern.sample_query|e }}"
+                                            data-slowest-query="{{ pattern.slowest_query_full|e }}"
                                             title="View Details">
                                         <i class="fas fa-eye"></i>
                                     </button>
@@ -426,7 +426,7 @@
                 </div>
                 
                 <div class="mb-3">
-                    <h6><i class="fas fa-code me-2"></i>Sample Query</h6>
+                    <h6><i class="fas fa-code me-2"></i>Slowest Query</h6>
                     <pre id="modalSampleQuery" class="bg-light p-3 rounded" style="max-height: 200px; overflow-y: auto; font-size: 12px;"></pre>
                 </div>
             </div>
@@ -442,12 +442,13 @@
 {% endif %}
 
 <script>
+// Global variable for copy functionality
+let currentPatternQuery = '';
+
 document.addEventListener('DOMContentLoaded', function() {
     // Modal functionality
     const patternModal = document.getElementById('patternModal');
     const viewDetailsButtons = document.querySelectorAll('.view-details-btn');
-    
-    let currentPatternQuery = '';
     
     viewDetailsButtons.forEach(button => {
         button.addEventListener('click', function() {
@@ -465,7 +466,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const totalDocsExamined = this.getAttribute('data-total-docs-examined');
             const indexEfficiency = parseFloat(this.getAttribute('data-index-efficiency'));
             const optimizationPotential = this.getAttribute('data-optimization-potential');
-            const sampleQuery = this.getAttribute('data-sample-query');
+            const slowestQuery = this.getAttribute('data-slowest-query');
             
             // Populate modal with pattern data
             document.getElementById('modalCollection').textContent = collection;
@@ -483,8 +484,8 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('modalMinMaxDuration').textContent = `${minDuration}ms / ${maxDuration}ms`;
             
             // Efficiency metrics
-            if (selectivity > 0) {
-                document.getElementById('modalSelectivity').textContent = `${selectivity}%`;
+            if (selectivity !== null && selectivity >= 0) {
+                document.getElementById('modalSelectivity').textContent = `${selectivity.toFixed(4)}%`;
                 document.getElementById('modalSelectivityDetail').textContent = `${totalReturned}/${totalDocsExamined} docs`;
             } else {
                 document.getElementById('modalSelectivity').textContent = 'N/A';
@@ -498,9 +499,9 @@ document.addEventListener('DOMContentLoaded', function() {
                                        optimizationPotential === 'medium' ? 'bg-warning' : 'bg-success';
             document.getElementById('modalOptimizationPotential').innerHTML = `<span class="badge ${potentialBadgeClass}">${optimizationPotential}</span>`;
             
-            // Sample query
-            document.getElementById('modalSampleQuery').textContent = sampleQuery;
-            currentPatternQuery = sampleQuery;
+            // Slowest query
+            document.getElementById('modalSampleQuery').textContent = slowestQuery;
+            currentPatternQuery = slowestQuery;
         });
     });
     
@@ -516,6 +517,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Copy query function
 function copyPatternQuery() {
+    console.log('Copy button clicked, currentPatternQuery:', currentPatternQuery ? 'Query loaded' : 'Empty');
+    
+    if (!currentPatternQuery) {
+        alert('No query to copy. Please click "View Details" first.');
+        return;
+    }
+    
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(currentPatternQuery).then(function() {
             const btn = event.target.closest('button');
