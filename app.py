@@ -18,6 +18,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['TEMP_FOLDER'] = 'temp'
+
+# Add custom Jinja2 filter for index information
+@app.template_filter('extract_index_info')
+def extract_index_info_filter(plan_summary):
+    """Template filter to extract index information from plan summary"""
+    return _extract_index_info(plan_summary)
 # Removed file size limit - can now upload files of any size
 
 # Ensure folders exist
@@ -25,6 +31,80 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'log', 'txt', 'zip', 'tar', 'gz'}
+
+def paginate_data(data, page=1, per_page=100):
+    """
+    Paginate a list of data
+    
+    Args:
+        data: List of items to paginate
+        page: Current page number (1-based)
+        per_page: Number of items per page (100, 300, or 'all')
+    
+    Returns:
+        dict with paginated data and pagination info
+    """
+    if per_page == 'all' or per_page == -1:
+        return {
+            'items': data,
+            'page': 1,
+            'per_page': len(data),
+            'total': len(data),
+            'pages': 1,
+            'has_prev': False,
+            'has_next': False,
+            'prev_num': None,
+            'next_num': None
+        }
+    
+    try:
+        per_page = int(per_page)
+        page = int(page)
+    except (ValueError, TypeError):
+        per_page = 100
+        page = 1
+    
+    if page < 1:
+        page = 1
+    
+    total = len(data)
+    pages = max(1, (total + per_page - 1) // per_page)  # Ceiling division
+    
+    if page > pages:
+        page = pages
+    
+    start = (page - 1) * per_page
+    end = start + per_page
+    
+    return {
+        'items': data[start:end],
+        'page': page,
+        'per_page': per_page,
+        'total': total,
+        'pages': pages,
+        'has_prev': page > 1,
+        'has_next': page < pages,
+        'prev_num': page - 1 if page > 1 else None,
+        'next_num': page + 1 if page < pages else None
+    }
+
+def get_pagination_params(request):
+    """Extract pagination parameters from request"""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 100)
+    
+    # Handle 'all' option
+    if per_page == 'all':
+        per_page = 'all'
+    else:
+        try:
+            per_page = int(per_page)
+            if per_page not in [100, 300]:
+                per_page = 100
+        except (ValueError, TypeError):
+            per_page = 100
+    
+    return page, per_page
 
 def allowed_file(filename):
     # Check for .tar.gz files specifically
@@ -420,7 +500,10 @@ class MongoLogAnalyzer:
                 
                 # Check if it's a slow query
                 if duration > 100:  # Consider queries > 100ms as slow
-                    plan_summary = attr.get('planSummary', 'None')
+                    plan_summary = (
+                        attr.get('planSummary') or 
+                        attr.get('command', {}).get('planSummary') or 'None'
+                    )
                     query_hash = attr.get('queryHash', None)
                     self.slow_queries.append({
                         'timestamp': timestamp,
@@ -435,9 +518,18 @@ class MongoLogAnalyzer:
                         'file_path': filepath,
                         'line_number': line_num,
                         # Extract performance metrics if available
-                        'docsExamined': attr.get('docsExamined', 0),
-                        'keysExamined': attr.get('keysExamined', 0),
-                        'nReturned': attr.get('nReturned', 0),
+                        'docsExamined': (
+                            attr.get('docsExamined') or 
+                            attr.get('command', {}).get('docsExamined') or 0
+                        ),
+                        'keysExamined': (
+                            attr.get('keysExamined') or 
+                            attr.get('command', {}).get('keysExamined') or 0
+                        ),
+                        'nReturned': (
+                            attr.get('nReturned') or 
+                            attr.get('command', {}).get('nReturned') or 0
+                        ),
                         'planCacheKey': attr.get('planCacheKey', '')
                     })
                     self.parsing_summary['slow_query_events'] += 1
@@ -519,9 +611,18 @@ class MongoLogAnalyzer:
                             'file_path': filepath,
                             'line_number': line_num,
                             # Extract performance metrics if available
-                            'docsExamined': attr.get('docsExamined', 0),
-                            'keysExamined': attr.get('keysExamined', 0),
-                            'nReturned': attr.get('nReturned', 0),
+                            'docsExamined': (
+                                attr.get('docsExamined') or 
+                                attr.get('command', {}).get('docsExamined') or 0
+                            ),
+                            'keysExamined': (
+                                attr.get('keysExamined') or 
+                                attr.get('command', {}).get('keysExamined') or 0
+                            ),
+                            'nReturned': (
+                                attr.get('nReturned') or 
+                                attr.get('command', {}).get('nReturned') or 0
+                            ),
                             'planCacheKey': attr.get('planCacheKey', '')
                         })
                         
@@ -1042,7 +1143,9 @@ class MongoLogAnalyzer:
             'plan_summary': '',
             'first_seen': None,
             'last_seen': None,
-            'sample_query': ''
+            'sample_query': '',
+            'slowest_query_full': '',
+            'slowest_execution_timestamp': None
         })
         
         for query in queries:
@@ -1060,6 +1163,9 @@ class MongoLogAnalyzer:
                 pattern['plan_summary'] = query.get('plan_summary', 'None')
                 pattern['sample_query'] = query.get('query', '')[:200] + ('...' if len(query.get('query', '')) > 200 else '')
                 pattern['first_seen'] = query.get('timestamp')
+                # Initialize with first query as slowest
+                pattern['slowest_query_full'] = query.get('query', '')
+                pattern['slowest_execution_timestamp'] = query.get('timestamp')
             
             # Add execution data
             pattern['executions'].append(query)
@@ -1071,10 +1177,23 @@ class MongoLogAnalyzer:
         unique_patterns = []
         for pattern_key, pattern in patterns.items():
             durations = pattern['durations']
+            executions = pattern['executions']
+            
+            # Find the slowest execution
+            max_duration = max(durations) if durations else 0
+            slowest_executions = [exec for exec in executions if exec.get('duration', 0) == max_duration]
+            
+            # If multiple executions have same max duration, pick the most recent one
+            if slowest_executions:
+                slowest_execution = max(slowest_executions, 
+                                      key=lambda x: x.get('timestamp') if x.get('timestamp') else datetime.min)
+                pattern['slowest_query_full'] = slowest_execution.get('query', '')
+                pattern['slowest_execution_timestamp'] = slowest_execution.get('timestamp')
+            
             pattern.update({
                 'avg_duration': sum(durations) / len(durations) if durations else 0,
                 'min_duration': min(durations) if durations else 0,
-                'max_duration': max(durations) if durations else 0,
+                'max_duration': max_duration,
                 'duration_range': f"{min(durations)}ms-{max(durations)}ms" if durations else "N/A"
             })
             unique_patterns.append(pattern)
@@ -1591,20 +1710,23 @@ class MongoLogAnalyzer:
                 docs_examined = (
                     attr.get('docsExamined') or 
                     attr.get('totalDocsExamined') or 
-                    attr.get('executionStats', {}).get('docsExamined') or 0
+                    attr.get('executionStats', {}).get('docsExamined') or
+                    attr.get('command', {}).get('docsExamined') or 0
                 )
                 
                 keys_examined = (
                     attr.get('keysExamined') or 
                     attr.get('totalKeysExamined') or 
-                    attr.get('executionStats', {}).get('keysExamined') or 0
+                    attr.get('executionStats', {}).get('keysExamined') or
+                    attr.get('command', {}).get('keysExamined') or 0
                 )
                 
                 n_returned = (
                     attr.get('nReturned') or 
                     attr.get('nreturned') or 
                     attr.get('numReturned') or 
-                    attr.get('executionStats', {}).get('nReturned') or 0
+                    attr.get('executionStats', {}).get('nReturned') or
+                    attr.get('command', {}).get('nReturned') or 0
                 )
                 
                 return {
@@ -1896,6 +2018,9 @@ def dashboard():
         except ValueError:
             pass
     
+    # Get pagination parameters
+    page, per_page = get_pagination_params(request)
+    
     # Get stats with filters applied
     stats = analyzer.get_connection_stats(
         start_date=start_date,
@@ -1904,8 +2029,20 @@ def dashboard():
         user_filter=user_filter
     )
     
+    # Paginate database access data
+    database_access_pagination = None
+    if hasattr(stats, 'database_access') and stats.database_access:
+        database_access_pagination = paginate_data(stats.database_access, page, per_page)
+    
+    # Paginate connections timeline
+    connections_timeline_pagination = None
+    if hasattr(stats, 'connections_timeline') and stats.connections_timeline:
+        connections_timeline_pagination = paginate_data(stats.connections_timeline, page, per_page)
+    
     return render_template('dashboard_results.html', 
                          stats=stats,
+                         database_access_pagination=database_access_pagination,
+                         connections_timeline_pagination=connections_timeline_pagination,
                          start_date=start_date_str,
                          end_date=end_date_str,
                          min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
@@ -1988,6 +2125,9 @@ def slow_queries():
             
         filtered_queries.append(query)
     
+    # Get pagination parameters
+    page, per_page = get_pagination_params(request)
+    
     # Process data based on view mode
     if view_mode == 'unique_queries':
         # Group queries by pattern
@@ -2000,8 +2140,12 @@ def slow_queries():
         display_data = filtered_queries
         total_count = len(filtered_queries)
     
+    # Apply pagination
+    pagination = paginate_data(display_data, page, per_page)
+    
     return render_template('slow_queries.html', 
-                         queries=display_data, 
+                         queries=pagination['items'], 
+                         pagination=pagination,
                          databases=sorted(databases),
                          selected_db=selected_db,
                          threshold=threshold,
@@ -2098,33 +2242,41 @@ def export_slow_queries():
         }
         
         for pattern in unique_patterns:
-            # Get original log entries for this pattern
-            original_executions = []
+            # Find the slowest execution for this pattern
+            slowest_execution = None
+            max_duration = pattern['max_duration']
             for execution in pattern['executions']:
-                original_line = analyzer.get_original_log_line(execution.get('file_path'), execution.get('line_number'))
+                if execution.get('duration', 0) == max_duration:
+                    if slowest_execution is None or (execution.get('timestamp') and execution.get('timestamp') > slowest_execution.get('timestamp', datetime.min)):
+                        slowest_execution = execution
+            
+            # Get original log entry for the slowest execution only
+            slowest_original_entry = None
+            if slowest_execution:
+                original_line = analyzer.get_original_log_line(slowest_execution.get('file_path'), slowest_execution.get('line_number'))
                 if original_line:
                     try:
-                        original_executions.append(json.loads(original_line))
+                        slowest_original_entry = json.loads(original_line)
                     except json.JSONDecodeError:
-                        original_executions.append({
-                            'timestamp': execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                            'duration_ms': execution['duration'],
-                            'database': execution['database'],
-                            'collection': execution['collection'],
-                            'query': execution['query'],
-                            'plan_summary': execution.get('plan_summary', 'None'),
+                        slowest_original_entry = {
+                            'timestamp': slowest_execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                            'duration_ms': slowest_execution['duration'],
+                            'database': slowest_execution['database'],
+                            'collection': slowest_execution['collection'],
+                            'query': slowest_execution['query'],
+                            'plan_summary': slowest_execution.get('plan_summary', 'None'),
                             'note': 'Processed data - original log entry was malformed'
-                        })
+                        }
                 else:
-                    original_executions.append({
-                        'timestamp': execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                        'duration_ms': execution['duration'],
-                        'database': execution['database'],
-                        'collection': execution['collection'],
-                        'query': execution['query'],
-                        'plan_summary': execution.get('plan_summary', 'None'),
+                    slowest_original_entry = {
+                        'timestamp': slowest_execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                        'duration_ms': slowest_execution['duration'],
+                        'database': slowest_execution['database'],
+                        'collection': slowest_execution['collection'],
+                        'query': slowest_execution['query'],
+                        'plan_summary': slowest_execution.get('plan_summary', 'None'),
                         'note': 'Processed data - original log entry not found'
-                    })
+                    }
             
             pattern_export = {
                 'pattern_summary': {
@@ -2140,7 +2292,7 @@ def export_slow_queries():
                     'last_seen': pattern['last_seen'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if pattern['last_seen'] else None,
                     'sample_query': pattern['sample_query']
                 },
-                'all_executions': original_executions
+                'slowest_execution': slowest_original_entry
             }
             export_data['patterns'].append(pattern_export)
         
@@ -2220,14 +2372,20 @@ def search_logs():
         except ValueError:
             pass
     
+    # Get pagination parameters
+    page, per_page = get_pagination_params(request)
+    
     # Perform search
     results = []
     search_performed = False
     error_message = None
+    pagination = None
     
     if keyword or (field_name and field_value):
         search_performed = True
         try:
+            # Get more results for pagination (up to 10,000 instead of using limit)
+            search_limit = 10000 if per_page == 'all' else max(per_page * 10 if per_page != 'all' else 1000, 1000)
             results = analyzer.search_logs(
                 keyword=keyword or None,
                 field_name=field_name or None,
@@ -2235,8 +2393,13 @@ def search_logs():
                 use_regex=use_regex,
                 start_date=start_date,
                 end_date=end_date,
-                limit=limit
+                limit=search_limit
             )
+            
+            # Apply pagination to results
+            pagination = paginate_data(results, page, per_page)
+            results = pagination['items']
+            
         except Exception as e:
             error_message = f"Search error: {str(e)}"
     
@@ -2251,9 +2414,10 @@ def search_logs():
                          max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
                          limit=limit,
                          results=results,
+                         pagination=pagination,
                          search_performed=search_performed,
                          error_message=error_message,
-                         result_count=len(results))
+                         result_count=pagination['total'] if pagination else len(results))
 
 @app.route('/export-search-results')
 def export_search_results():
@@ -2422,6 +2586,9 @@ def slow_query_analysis():
     original_queries = analyzer.slow_queries
     analyzer.slow_queries = filtered_queries
     
+    # Get pagination parameters
+    page, per_page = get_pagination_params(request)
+    
     # Analyze query patterns with filtered data
     patterns = analyzer.analyze_query_patterns()
     
@@ -2439,8 +2606,15 @@ def slow_query_analysis():
     else:
         avg_duration = 0
     
+    # Convert patterns dict to list for pagination
+    patterns_list = list(patterns.items())
+    
+    # Apply pagination
+    pagination = paginate_data(patterns_list, page, per_page)
+    
     return render_template('slow_query_analysis.html',
-                         patterns=patterns,
+                         patterns=dict(pagination['items']) if pagination['items'] else {},
+                         pagination=pagination,
                          total_executions=total_executions,
                          avg_duration=avg_duration,
                          high_priority_count=high_priority_count,
@@ -2791,6 +2965,76 @@ def _normalize_query_structure(query):
         return []
     else:
         return type(query).__name__
+
+def _extract_index_info(plan_summary):
+    """Extract index information from planSummary field"""
+    if not plan_summary or plan_summary == 'None':
+        return {
+            'scan_type': 'Unknown',
+            'index_pattern': None,
+            'index_name': None,
+            'display_text': 'Unknown'
+        }
+    
+    # Handle different plan summary formats
+    if plan_summary == 'COLLSCAN':
+        return {
+            'scan_type': 'COLLSCAN',
+            'index_pattern': None,
+            'index_name': None,
+            'display_text': 'Collection Scan (No Index)'
+        }
+    elif plan_summary.startswith('IXSCAN'):
+        # Extract index pattern from plan summary like "IXSCAN { userId: 1, status: 1 }"
+        index_pattern = None
+        display_text = 'Index Scan'
+        
+        if '{' in plan_summary and '}' in plan_summary:
+            try:
+                # Extract the pattern between braces
+                start = plan_summary.find('{')
+                end = plan_summary.rfind('}') + 1
+                pattern_str = plan_summary[start:end]
+                
+                # Try to parse as JSON to validate and format
+                index_pattern = json.loads(pattern_str)
+                
+                # Create readable display text
+                if isinstance(index_pattern, dict):
+                    fields = []
+                    for field, direction in index_pattern.items():
+                        if direction == 1:
+                            fields.append(f"{field} (asc)")
+                        elif direction == -1:
+                            fields.append(f"{field} (desc)")
+                        else:
+                            fields.append(f"{field}")
+                    display_text = f"Index Scan: {', '.join(fields)}"
+                else:
+                    display_text = f"Index Scan: {pattern_str}"
+                    
+            except:
+                # If JSON parsing fails, extract as string
+                start = plan_summary.find('{')
+                end = plan_summary.rfind('}') + 1
+                pattern_str = plan_summary[start:end]
+                index_pattern = pattern_str
+                display_text = f"Index Scan: {pattern_str}"
+        
+        return {
+            'scan_type': 'IXSCAN',
+            'index_pattern': index_pattern,
+            'index_name': None,  # Would need detailed logs for actual index name
+            'display_text': display_text
+        }
+    else:
+        # Handle other plan types (SORT, PROJECTION, etc.)
+        return {
+            'scan_type': plan_summary,
+            'index_pattern': None,
+            'index_name': None,
+            'display_text': plan_summary
+        }
 
 def _generate_current_op_recommendations(analysis):
     """Generate recommendations based on currentOp analysis"""

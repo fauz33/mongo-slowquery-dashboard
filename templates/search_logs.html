@@ -168,6 +168,11 @@
             </div>
             <div class="card-body">
                 {% if results %}
+                    <!-- Pagination controls -->
+                    {% if pagination %}
+                        {% include 'pagination.html' %}
+                    {% endif %}
+                    
                     <div class="table-responsive" style="overflow-x: auto;">
                         <table class="table table-bordered table-hover">
                             <thead class="table-primary">

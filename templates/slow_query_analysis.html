@@ -241,6 +241,11 @@
                 </h5>
             </div>
             <div class="card-body">
+                <!-- Pagination controls -->
+                {% if pagination %}
+                    {% include 'pagination.html' %}
+                {% endif %}
+                
                 <div class="table-responsive">
                     <table class="table table-hover table-sm">
                         <thead class="table-primary">
@@ -279,12 +284,23 @@
                                     <span class="badge bg-info">{{ pattern.query_type }}</span>
                                 </td>
                                 <td>
-                                    {% if pattern.plan_summary == 'COLLSCAN' %}
-                                        <span class="badge bg-danger">{{ pattern.plan_summary }}</span>
-                                    {% elif pattern.plan_summary == 'IXSCAN' %}
-                                        <span class="badge bg-success">{{ pattern.plan_summary }}</span>
+                                    {% set index_info = pattern.plan_summary|extract_index_info %}
+                                    {% if index_info.scan_type == 'COLLSCAN' %}
+                                        <span class="badge bg-danger" title="Full collection scan - high optimization priority">
+                                            <i class="fas fa-exclamation-triangle me-1"></i>COLLSCAN
+                                        </span>
+                                    {% elif index_info.scan_type == 'IXSCAN' %}
+                                        <span class="badge bg-success" title="{{ index_info.display_text }}">
+                                            <i class="fas fa-search me-1"></i>
+                                            {% if index_info.index_pattern %}
+                                                Index Scan
+                                                <br><small style="font-size: 0.7em;">{{ index_info.display_text.replace('Index Scan: ', '') }}</small>
+                                            {% else %}
+                                                IXSCAN
+                                            {% endif %}
+                                        </span>
                                     {% else %}
-                                        <span class="badge bg-secondary">{{ pattern.plan_summary }}</span>
+                                        <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ pattern.plan_summary }}</span>
                                     {% endif %}
                                 </td>
                                 <td class="text-center">

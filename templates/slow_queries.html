@@ -244,6 +244,11 @@
             </div>
             <div class="card-body">
                 {% if queries %}
+                    <!-- Pagination controls -->
+                    {% if pagination %}
+                        {% include 'pagination.html' %}
+                    {% endif %}
+                    
                     <div class="table-responsive" style="overflow-x: auto;">
                         <table class="table table-bordered table-hover table-nowrap">
                             <thead class="table-primary">
@@ -298,12 +303,23 @@
                                             {% endif %}
                                         </td>
                                         <td class="text-center">
-                                            {% if query.plan_summary == 'COLLSCAN' %}
-                                                <span class="badge bg-danger">{{ query.plan_summary }}</span>
-                                            {% elif query.plan_summary == 'IXSCAN' %}
-                                                <span class="badge bg-success">{{ query.plan_summary }}</span>
+                                            {% set index_info = query.plan_summary|extract_index_info %}
+                                            {% if index_info.scan_type == 'COLLSCAN' %}
+                                                <span class="badge bg-danger" title="Full collection scan - consider adding an index">
+                                                    <i class="fas fa-exclamation-triangle me-1"></i>COLLSCAN
+                                                </span>
+                                            {% elif index_info.scan_type == 'IXSCAN' %}
+                                                <span class="badge bg-success" title="{{ index_info.display_text }}">
+                                                    <i class="fas fa-search me-1"></i>
+                                                    {% if index_info.index_pattern %}
+                                                        Index Scan
+                                                        <br><small style="font-size: 0.7em;">{{ index_info.display_text.replace('Index Scan: ', '') }}</small>
+                                                    {% else %}
+                                                        IXSCAN
+                                                    {% endif %}
+                                                </span>
                                             {% elif query.plan_summary and query.plan_summary != 'None' %}
-                                                <span class="badge bg-secondary">{{ query.plan_summary }}</span>
+                                                <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ query.plan_summary }}</span>
                                             {% else %}
                                                 <span class="badge bg-light text-dark">none</span>
                                             {% endif %}
@@ -326,7 +342,7 @@
                                                     data-bs-toggle="modal" 
                                                     data-bs-target="#queryModal"
                                                     data-query-number="{{ loop.index }}"
-                                                    data-query-text="{{ query.sample_query|e }}"
+                                                    data-query-text="{{ query.slowest_query_full|e }}"
                                                     data-execution-count="{{ query.total_count }}">
                                                 <i class="fas fa-expand-alt me-1"></i>View Details
                                             </button>
@@ -353,12 +369,23 @@
                                             {% endif %}
                                         </td>
                                         <td class="text-center">
-                                            {% if query.plan_summary == 'COLLSCAN' %}
-                                                <span class="badge bg-danger">{{ query.plan_summary }}</span>
-                                            {% elif query.plan_summary == 'IXSCAN' %}
-                                                <span class="badge bg-success">{{ query.plan_summary }}</span>
+                                            {% set index_info = query.plan_summary|extract_index_info %}
+                                            {% if index_info.scan_type == 'COLLSCAN' %}
+                                                <span class="badge bg-danger" title="Full collection scan - consider adding an index">
+                                                    <i class="fas fa-exclamation-triangle me-1"></i>COLLSCAN
+                                                </span>
+                                            {% elif index_info.scan_type == 'IXSCAN' %}
+                                                <span class="badge bg-success" title="{{ index_info.display_text }}">
+                                                    <i class="fas fa-search me-1"></i>
+                                                    {% if index_info.index_pattern %}
+                                                        Index Scan
+                                                        <br><small style="font-size: 0.7em;">{{ index_info.display_text.replace('Index Scan: ', '') }}</small>
+                                                    {% else %}
+                                                        IXSCAN
+                                                    {% endif %}
+                                                </span>
                                             {% elif query.plan_summary and query.plan_summary != 'None' %}
-                                                <span class="badge bg-secondary">{{ query.plan_summary }}</span>
+                                                <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ query.plan_summary }}</span>
                                             {% else %}
                                                 <span class="badge bg-light text-dark">none</span>
                                             {% endif %}
@@ -423,20 +450,18 @@
     <div class="modal-dialog modal-xl">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Full Query Details</h5>
+                <h5 class="modal-title">Slowest Query Details</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
-                    <label class="form-label fw-bold">Query #<span id="queryNumber"></span></label>
-                    <pre id="fullQuery" class="bg-light p-3 rounded" style="white-space: pre-wrap; word-break: break-all;"></pre>
+                    <label class="form-label fw-bold">Pattern #<span id="queryNumber"></span> - Slowest Execution</label>
+                    <pre id="fullQuery" class="bg-light p-3 rounded" style="white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto;"></pre>
+                    <small class="text-muted">You can select and copy the text above manually (Ctrl+C / Cmd+C)</small>
                 </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="btn btn-primary" onclick="copyQuery()">
-                    <i class="fas fa-copy me-2"></i>Copy Query
-                </button>
             </div>
         </div>
     </div>
@@ -513,39 +538,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Copy query function
-function copyQuery() {
-    const queryText = document.getElementById('fullQuery').textContent;
-    
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(queryText).then(function() {
-            const btn = event.target;
-            const originalText = btn.innerHTML;
-            btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
-            btn.classList.remove('btn-primary');
-            btn.classList.add('btn-success');
-            
-            setTimeout(() => {
-                btn.innerHTML = originalText;
-                btn.classList.remove('btn-success');
-                btn.classList.add('btn-primary');
-            }, 2000);
-        }).catch(function(err) {
-            console.error('Copy failed:', err);
-            alert('Copy failed. Please select and copy manually.');
-        });
-    } else {
-        // Fallback: select text for manual copy
-        const queryElement = document.getElementById('fullQuery');
-        const range = document.createRange();
-        range.selectNodeContents(queryElement);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        
-        alert('Text selected. Please press Ctrl+C (Cmd+C on Mac) to copy.');
-    }
-}
+// Copy query function removed - users can manually select and copy text
 
 // Date range helper functions
 function setDateRange(range) {

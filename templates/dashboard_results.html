@@ -266,30 +266,59 @@
                 <i class="fas fa-chart-bar me-1"></i>
                 Connection Timeline
             </div>
-            <div class="card-body" style="height: 300px; overflow-y: auto;">
-                {% if stats.connections_timeline %}
-                    {% for connection in stats.connections_timeline[-20:] %}
-                    <div class="d-flex align-items-center mb-2">
-                        <div class="me-3">
-                            {% if connection.type == 'connection_accepted' %}
-                                <i class="fas fa-arrow-right text-success"></i>
-                            {% else %}
-                                <i class="fas fa-arrow-left text-danger"></i>
-                            {% endif %}
+            <div class="card-body">
+                {% if connections_timeline_pagination %}
+                    <!-- Pagination controls at top -->
+                    {% set pagination = connections_timeline_pagination %}
+                    {% include 'pagination.html' %}
+                    
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        {% for connection in connections_timeline_pagination.items %}
+                        <div class="d-flex align-items-center mb-2">
+                            <div class="me-3">
+                                {% if connection.type == 'connection_accepted' %}
+                                    <i class="fas fa-arrow-right text-success"></i>
+                                {% else %}
+                                    <i class="fas fa-arrow-left text-danger"></i>
+                                {% endif %}
+                            </div>
+                            <div class="flex-grow-1">
+                                <div class="fw-bold">{{ connection.ip }}:{{ connection.port }}</div>
+                                <small class="text-muted">
+                                    {{ connection.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} - 
+                                    {{ 'Connected' if connection.type == 'connection_accepted' else 'Disconnected' }}
+                                    {% if connection.connection_id %}(conn{{ connection.connection_id }}){% endif %}
+                                </small>
+                            </div>
                         </div>
-                        <div class="flex-grow-1">
-                            <div class="fw-bold">{{ connection.ip }}:{{ connection.port }}</div>
-                            <small class="text-muted">
-                                {{ connection.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} - 
-                                {{ 'Connected' if connection.type == 'connection_accepted' else 'Disconnected' }}
-                                {% if connection.connection_id %}(conn{{ connection.connection_id }}){% endif %}
-                            </small>
-                        </div>
+                        {% endfor %}
                     </div>
-                    {% endfor %}
-                    {% if stats.connections_timeline|length > 20 %}
-                        <small class="text-muted">Showing last 20 events of {{ stats.connections_timeline|length }} total</small>
-                    {% endif %}
+                {% elif stats.connections_timeline %}
+                    <!-- Fallback for when pagination is not available -->
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        {% for connection in stats.connections_timeline[-100:] %}
+                        <div class="d-flex align-items-center mb-2">
+                            <div class="me-3">
+                                {% if connection.type == 'connection_accepted' %}
+                                    <i class="fas fa-arrow-right text-success"></i>
+                                {% else %}
+                                    <i class="fas fa-arrow-left text-danger"></i>
+                                {% endif %}
+                            </div>
+                            <div class="flex-grow-1">
+                                <div class="fw-bold">{{ connection.ip }}:{{ connection.port }}</div>
+                                <small class="text-muted">
+                                    {{ connection.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} - 
+                                    {{ 'Connected' if connection.type == 'connection_accepted' else 'Disconnected' }}
+                                    {% if connection.connection_id %}(conn{{ connection.connection_id }}){% endif %}
+                                </small>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        {% if stats.connections_timeline|length > 100 %}
+                            <small class="text-muted">Showing last 100 events of {{ stats.connections_timeline|length }} total</small>
+                        {% endif %}
+                    </div>
                 {% else %}
                     <p class="text-muted">No connection events found in the log file.</p>
                 {% endif %}
@@ -374,21 +403,25 @@
                 Database Access Summary
             </div>
             <div class="card-body">
-                <div class="table-responsive" style="max-height: 400px; overflow-y: auto; overflow-x: auto;">
-                    <table class="table table-bordered table-nowrap">
-                        <thead>
-                            <tr>
-                                <th style="min-width: 100px;">User</th>
-                                <th style="min-width: 120px;">Database</th>
-                                <th style="min-width: 120px;">Collection</th>
-                                <th style="min-width: 100px;">Command</th>
-                                <th style="min-width: 120px;">Connection ID</th>
-                                <th style="min-width: 140px;">Timestamp</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% if stats.database_access %}
-                                {% for access in stats.database_access[-50:] %}
+                {% if database_access_pagination %}
+                    <!-- Pagination controls at top -->
+                    {% set pagination = database_access_pagination %}
+                    {% include 'pagination.html' %}
+                    
+                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto; overflow-x: auto;">
+                        <table class="table table-bordered table-nowrap">
+                            <thead>
+                                <tr>
+                                    <th style="min-width: 100px;">User</th>
+                                    <th style="min-width: 120px;">Database</th>
+                                    <th style="min-width: 120px;">Collection</th>
+                                    <th style="min-width: 100px;">Command</th>
+                                    <th style="min-width: 120px;">Connection ID</th>
+                                    <th style="min-width: 140px;">Timestamp</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for access in database_access_pagination.items %}
                                 <tr>
                                     <td>
                                         {% if access.username %}
@@ -438,21 +471,87 @@
                                     </td>
                                 </tr>
                                 {% endfor %}
-                                {% if stats.database_access|length > 50 %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% elif stats.database_access %}
+                    <!-- Fallback for when pagination is not available -->
+                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto; overflow-x: auto;">
+                        <table class="table table-bordered table-nowrap">
+                            <thead>
+                                <tr>
+                                    <th style="min-width: 100px;">User</th>
+                                    <th style="min-width: 120px;">Database</th>
+                                    <th style="min-width: 120px;">Collection</th>
+                                    <th style="min-width: 100px;">Command</th>
+                                    <th style="min-width: 120px;">Connection ID</th>
+                                    <th style="min-width: 140px;">Timestamp</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for access in stats.database_access[-100:] %}
+                                <tr>
+                                    <td>
+                                        {% if access.username %}
+                                            <span class="badge bg-primary">{{ access.username }}</span>
+                                        {% else %}
+                                            <small class="text-muted">Unknown</small>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-info">{{ access.database }}</span>
+                                    </td>
+                                    <td>{{ access.collection }}</td>
+                                    <td>
+                                        {% if access.command_type == 'find' %}
+                                            <span class="badge bg-success">
+                                                <i class="fas fa-search me-1"></i>Find
+                                            </span>
+                                        {% elif access.command_type == 'insert' %}
+                                            <span class="badge bg-primary">
+                                                <i class="fas fa-plus me-1"></i>Insert
+                                            </span>
+                                        {% elif access.command_type == 'update' %}
+                                            <span class="badge bg-warning">
+                                                <i class="fas fa-edit me-1"></i>Update
+                                            </span>
+                                        {% elif access.command_type == 'remove' or access.command_type == 'delete' %}
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-trash me-1"></i>Delete
+                                            </span>
+                                        {% elif access.command_type == 'aggregate' %}
+                                            <span class="badge bg-secondary">
+                                                <i class="fas fa-chart-bar me-1"></i>Aggregate
+                                            </span>
+                                        {% elif access.command_type == 'count' %}
+                                            <span class="badge bg-dark">
+                                                <i class="fas fa-calculator me-1"></i>Count
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-light text-dark">{{ access.command_type or 'Unknown' }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small class="text-muted">conn{{ access.connection_id }}</small>
+                                    </td>
+                                    <td>
+                                        <small>{{ access.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                                {% if stats.database_access|length > 100 %}
                                     <tr>
                                         <td colspan="6" class="text-center text-muted">
-                                            <small>Showing last 50 of {{ stats.database_access|length }} database operations</small>
+                                            <small>Showing last 100 of {{ stats.database_access|length }} database operations</small>
                                         </td>
                                     </tr>
                                 {% endif %}
-                            {% else %}
-                                <tr>
-                                    <td colspan="6" class="text-center text-muted">No database access data found</td>
-                                </tr>
-                            {% endif %}
-                        </tbody>
-                    </table>
-                </div>
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No database access data found</p>
+                {% endif %}
             </div>
         </div>
     </div>
