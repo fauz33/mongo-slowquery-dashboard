@@ -426,7 +426,7 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="btn btn-primary" onclick="copyPatternQuery()">
+                <button type="button" class="btn btn-primary" onclick="copyPatternQuery(event)">
                     <i class="fas fa-copy me-2"></i>Copy Query
                 </button>
             </div>
@@ -510,7 +510,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Copy query function
-function copyPatternQuery() {
+function copyPatternQuery(event) {
     console.log('Copy button clicked, currentPatternQuery:', currentPatternQuery ? 'Query loaded' : 'Empty');
     
     if (!currentPatternQuery) {
