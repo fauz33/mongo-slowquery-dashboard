@@ -310,13 +310,7 @@
                                                 </span>
                                             {% elif index_info.scan_type == 'IXSCAN' %}
                                                 <span class="badge bg-success" title="{{ index_info.display_text }}">
-                                                    <i class="fas fa-search me-1"></i>
-                                                    {% if index_info.index_pattern %}
-                                                        Index Scan
-                                                        <br><small style="font-size: 0.7em;">{{ index_info.display_text.replace('Index Scan: ', '') }}</small>
-                                                    {% else %}
-                                                        IXSCAN
-                                                    {% endif %}
+                                                    <i class="fas fa-search me-1"></i>IXSCAN
                                                 </span>
                                             {% elif query.plan_summary and query.plan_summary != 'None' %}
                                                 <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ query.plan_summary }}</span>
@@ -376,13 +370,7 @@
                                                 </span>
                                             {% elif index_info.scan_type == 'IXSCAN' %}
                                                 <span class="badge bg-success" title="{{ index_info.display_text }}">
-                                                    <i class="fas fa-search me-1"></i>
-                                                    {% if index_info.index_pattern %}
-                                                        Index Scan
-                                                        <br><small style="font-size: 0.7em;">{{ index_info.display_text.replace('Index Scan: ', '') }}</small>
-                                                    {% else %}
-                                                        IXSCAN
-                                                    {% endif %}
+                                                    <i class="fas fa-search me-1"></i>IXSCAN
                                                 </span>
                                             {% elif query.plan_summary and query.plan_summary != 'None' %}
                                                 <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ query.plan_summary }}</span>
@@ -462,7 +450,7 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="btn btn-primary" onclick="copySlowQuery()">
+                <button type="button" class="btn btn-primary" onclick="copySlowQuery(event)">
                     <i class="fas fa-copy me-2"></i>Copy Query
                 </button>
             </div>
@@ -475,7 +463,7 @@
 let currentSlowQuery = '';
 
 // Copy query function
-function copySlowQuery() {
+function copySlowQuery(event) {
     console.log('Copy button clicked, currentSlowQuery:', currentSlowQuery ? 'Query loaded' : 'Empty');
     
     if (!currentSlowQuery) {

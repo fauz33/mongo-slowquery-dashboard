@@ -291,13 +291,7 @@
                                         </span>
                                     {% elif index_info.scan_type == 'IXSCAN' %}
                                         <span class="badge bg-success" title="{{ index_info.display_text }}">
-                                            <i class="fas fa-search me-1"></i>
-                                            {% if index_info.index_pattern %}
-                                                Index Scan
-                                                <br><small style="font-size: 0.7em;">{{ index_info.display_text.replace('Index Scan: ', '') }}</small>
-                                            {% else %}
-                                                IXSCAN
-                                            {% endif %}
+                                            <i class="fas fa-search me-1"></i>IXSCAN
                                         </span>
                                     {% else %}
                                         <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ pattern.plan_summary }}</span>
