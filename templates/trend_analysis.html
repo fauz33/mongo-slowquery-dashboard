@@ -1,0 +1,435 @@
+{% extends "base.html" %}
+
+{% block title %}Trend Analysis - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">
+        <i class="fas fa-chart-line me-2"></i>Performance Trend Analysis
+        <small class="text-muted">Unique Query Performance Over Time</small>
+    </h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-success" onclick="exportTrendData()">
+                <i class="fas fa-download me-2"></i>Export Trends
+            </button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Summary Cards -->
+<div class="row mb-4">
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-primary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Unique Queries</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.total_unique_queries }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-primary text-white">
+                            <i class="fas fa-search"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-danger">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">Degrading</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.degrading_trends }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-danger text-white">
+                            <i class="fas fa-arrow-down"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-success">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Improving</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.improving_trends }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-success text-white">
+                            <i class="fas fa-arrow-up"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Stable</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.stable_trends }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-minus"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Critical</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.critical_performance_queries }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-warning text-white">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-dark">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-dark text-uppercase mb-1">Executions</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.total_executions }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-dark text-white">
+                            <i class="fas fa-play"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if trends %}
+<!-- Filter Controls -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">
+            <i class="fas fa-filter me-2"></i>Filter Trends
+        </h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <label for="trendFilter" class="form-label">Trend Direction</label>
+                <select class="form-select" id="trendFilter" onchange="filterTrends()">
+                    <option value="">All Trends</option>
+                    <option value="degrading">Degrading</option>
+                    <option value="improving">Improving</option>
+                    <option value="stable">Stable</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="statusFilter" class="form-label">Performance Status</label>
+                <select class="form-select" id="statusFilter" onchange="filterTrends()">
+                    <option value="">All Status</option>
+                    <option value="critical">Critical</option>
+                    <option value="warning">Warning</option>
+                    <option value="good">Good</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="collectionTrendFilter" class="form-label">Collection</label>
+                <select class="form-select" id="collectionTrendFilter" onchange="filterTrends()">
+                    <option value="">All Collections</option>
+                    {% set collections_seen = [] %}
+                    {% for trend in trends %}
+                        {% if trend.collection not in collections_seen %}
+                            {% set _ = collections_seen.append(trend.collection) %}
+                            <option value="{{ trend.collection }}">{{ trend.collection }}</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="minExecutions" class="form-label">Min Executions</label>
+                <input type="number" class="form-control" id="minExecutions" placeholder="e.g. 5" onchange="filterTrends()">
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Trends List -->
+<div id="trendsList">
+    {% for trend in trends %}
+    <div class="card mb-4 trend-card" 
+         data-trend="{{ trend.duration_trend }}"
+         data-status="{{ trend.performance_status }}"
+         data-collection="{{ trend.collection }}"
+         data-executions="{{ trend.total_executions }}">
+        
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center">
+                <!-- Trend Direction Badge -->
+                {% if trend.duration_trend == 'degrading' %}
+                    <span class="badge bg-danger me-2">
+                        <i class="fas fa-arrow-down me-1"></i>Degrading
+                    </span>
+                {% elif trend.duration_trend == 'improving' %}
+                    <span class="badge bg-success me-2">
+                        <i class="fas fa-arrow-up me-1"></i>Improving
+                    </span>
+                {% elif trend.duration_trend == 'stable' %}
+                    <span class="badge bg-info me-2">
+                        <i class="fas fa-minus me-1"></i>Stable
+                    </span>
+                {% else %}
+                    <span class="badge bg-secondary me-2">
+                        <i class="fas fa-question me-1"></i>Unknown
+                    </span>
+                {% endif %}
+
+                <!-- Performance Status Badge -->
+                {% if trend.performance_status == 'critical' %}
+                    <span class="badge bg-warning text-dark me-2">
+                        <i class="fas fa-exclamation-triangle me-1"></i>Critical
+                    </span>
+                {% elif trend.performance_status == 'warning' %}
+                    <span class="badge bg-warning me-2">
+                        <i class="fas fa-exclamation-circle me-1"></i>Warning
+                    </span>
+                {% else %}
+                    <span class="badge bg-light text-dark me-2">
+                        <i class="fas fa-check me-1"></i>Good
+                    </span>
+                {% endif %}
+
+                <!-- Collection -->
+                <h6 class="mb-0">
+                    <i class="fas fa-database me-1"></i>{{ trend.collection }}
+                </h6>
+            </div>
+
+            <div class="text-muted">
+                <small>{{ trend.total_executions }} executions</small>
+            </div>
+        </div>
+
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-8">
+                    <!-- Query Structure -->
+                    <h6 class="text-primary mb-2">
+                        <i class="fas fa-search me-1"></i>Query Structure
+                    </h6>
+                    <div class="bg-light p-3 rounded mb-3">
+                        {% if trend.query_structure.filter %}
+                            <strong>Filter fields:</strong> {{ trend.query_structure.filter|join(', ') }}<br>
+                        {% endif %}
+                        {% if trend.query_structure.sort %}
+                            <strong>Sort fields:</strong> {{ trend.query_structure.sort|join(', ') }}<br>
+                        {% endif %}
+                        <small class="text-muted">Pattern: {{ trend.pattern_key }}</small>
+                    </div>
+
+                    <!-- Performance Trends -->
+                    <h6 class="text-info mb-2">
+                        <i class="fas fa-chart-line me-1"></i>Performance Trends
+                    </h6>
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <div class="text-center">
+                                <div class="h5 mb-0 {% if trend.duration_trend == 'degrading' %}text-danger{% elif trend.duration_trend == 'improving' %}text-success{% else %}text-info{% endif %}">
+                                    {{ "%.0f"|format(trend.avg_duration) }}ms
+                                </div>
+                                <small class="text-muted">Avg Duration<br>
+                                    <span class="badge badge-sm bg-light text-dark">
+                                        {{ "%.0f"|format(trend.min_duration) }} - {{ "%.0f"|format(trend.max_duration) }}ms
+                                    </span>
+                                </small>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="text-center">
+                                <div class="h5 mb-0 {% if trend.selectivity_trend == 'degrading' %}text-danger{% elif trend.selectivity_trend == 'improving' %}text-success{% else %}text-info{% endif %}">
+                                    {{ "%.2f"|format(trend.avg_selectivity) }}%
+                                </div>
+                                <small class="text-muted">Avg Selectivity<br>
+                                    <span class="badge badge-sm {% if trend.selectivity_trend == 'degrading' %}bg-danger{% elif trend.selectivity_trend == 'improving' %}bg-success{% else %}bg-secondary{% endif %}">
+                                        {{ trend.selectivity_trend|title }}
+                                    </span>
+                                </small>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="text-center">
+                                <div class="h5 mb-0 {% if trend.docs_examined_trend == 'degrading' %}text-danger{% elif trend.docs_examined_trend == 'improving' %}text-success{% else %}text-info{% endif %}">
+                                    {{ "%.0f"|format(trend.avg_docs_examined) }}
+                                </div>
+                                <small class="text-muted">Avg Docs Examined<br>
+                                    <span class="badge badge-sm {% if trend.docs_examined_trend == 'degrading' %}bg-danger{% elif trend.docs_examined_trend == 'improving' %}bg-success{% else %}bg-secondary{% endif %}">
+                                        {{ trend.docs_examined_trend|title }}
+                                    </span>
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4">
+                    <!-- Time Span -->
+                    <h6 class="text-secondary mb-2">
+                        <i class="fas fa-clock me-1"></i>Analysis Period
+                    </h6>
+                    <p class="small text-muted mb-3">{{ trend.time_span }}</p>
+
+                    <!-- Recent Executions Chart -->
+                    <h6 class="text-secondary mb-2">
+                        <i class="fas fa-chart-bar me-1"></i>Recent Executions
+                    </h6>
+                    <div class="execution-chart mb-3" style="height: 150px; overflow-y: auto;">
+                        {% for execution in trend.executions[-5:] %}
+                        <div class="d-flex justify-content-between align-items-center py-1">
+                            <small class="text-muted">{{ execution.timestamp[:19] if execution.timestamp else 'Unknown' }}</small>
+                            <span class="badge {% if execution.duration > 5000 %}bg-danger{% elif execution.duration > 1000 %}bg-warning{% else %}bg-success{% endif %}">
+                                {{ execution.duration }}ms
+                            </span>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <!-- Recommendations -->
+                    {% if trend.recommendations %}
+                    <h6 class="text-warning mb-2">
+                        <i class="fas fa-lightbulb me-1"></i>Recommendations
+                    </h6>
+                    <ul class="list-unstyled small">
+                        {% for rec in trend.recommendations %}
+                        <li class="mb-1"><i class="fas fa-arrow-right me-1 text-warning"></i>{{ rec }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% else %}
+<!-- No Trends -->
+<div class="card">
+    <div class="card-body text-center py-5">
+        <i class="fas fa-chart-line fa-3x text-muted mb-3"></i>
+        <h4>No Trend Data Available</h4>
+        <p class="text-muted">Need at least 2 executions per unique query to generate trends. Upload more log data or check back later.</p>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-primary">
+            <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+        </a>
+    </div>
+</div>
+{% endif %}
+
+<script>
+// Global variable to store original trend cards
+let allTrends = document.querySelectorAll('.trend-card');
+
+function filterTrends() {
+    const trendFilter = document.getElementById('trendFilter').value;
+    const statusFilter = document.getElementById('statusFilter').value;
+    const collectionFilter = document.getElementById('collectionTrendFilter').value;
+    const minExecutions = parseInt(document.getElementById('minExecutions').value) || 0;
+
+    allTrends.forEach(card => {
+        const trend = card.getAttribute('data-trend');
+        const status = card.getAttribute('data-status');
+        const collection = card.getAttribute('data-collection');
+        const executions = parseInt(card.getAttribute('data-executions')) || 0;
+
+        const matches = 
+            (trendFilter === '' || trend === trendFilter) &&
+            (statusFilter === '' || status === statusFilter) &&
+            (collectionFilter === '' || collection === collectionFilter) &&
+            (executions >= minExecutions);
+
+        card.style.display = matches ? 'block' : 'none';
+    });
+}
+
+function exportTrendData() {
+    const trends = [];
+    
+    document.querySelectorAll('.trend-card:not([style*="display: none"])').forEach(card => {
+        const collection = card.getAttribute('data-collection');
+        const trend = card.getAttribute('data-trend');
+        const status = card.getAttribute('data-status');
+        const executions = card.getAttribute('data-executions');
+        
+        trends.push({
+            collection,
+            trend_direction: trend,
+            performance_status: status,
+            total_executions: executions
+        });
+    });
+
+    if (trends.length === 0) {
+        alert('No trend data to export');
+        return;
+    }
+
+    const csvContent = 'Collection,Trend Direction,Performance Status,Total Executions\n' +
+                      trends.map(t => `"${t.collection}","${t.trend_direction}","${t.performance_status}","${t.total_executions}"`).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mongodb_trend_analysis_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+}
+</script>
+
+<style>
+.execution-chart {
+    background: #f8f9fa;
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    border: 1px solid #dee2e6;
+}
+
+.trend-card {
+    transition: all 0.2s ease;
+}
+
+.trend-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+</style>
+
+{% endblock %}

@@ -1,0 +1,557 @@
+{% extends "base.html" %}
+
+{% block title %}Resource Impact Analysis - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">
+        <i class="fas fa-server me-2"></i>Resource Impact Analysis
+        <small class="text-muted">Memory, I/O, and CPU Analysis</small>
+    </h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-success" onclick="exportResourceData()">
+                <i class="fas fa-download me-2"></i>Export Analysis
+            </button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Summary Cards -->
+<div class="row mb-4">
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-primary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Queries Analyzed</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.total_queries_analyzed }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-primary text-white">
+                            <i class="fas fa-search"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Memory Intensive</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.memory_intensive_count }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-warning text-white">
+                            <i class="fas fa-memory"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">I/O Intensive</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.io_intensive_count }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-hdd"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-danger">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">CPU Intensive</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.cpu_intensive_count }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-danger text-white">
+                            <i class="fas fa-microchip"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-success">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Collections</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.collections_analyzed }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-success text-white">
+                            <i class="fas fa-database"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-2 col-md-4 col-sm-6">
+        <div class="card card-stats border-left-dark">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-dark text-uppercase mb-1">Peak Periods</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ summary_stats.peak_resource_periods }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-dark text-white">
+                            <i class="fas fa-chart-bar"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Tab Navigation -->
+<ul class="nav nav-tabs mb-4" id="resourceTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="memory-tab" data-bs-toggle="tab" data-bs-target="#memory-content" type="button">
+            <i class="fas fa-memory me-1"></i>Memory Intensive Queries
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="io-tab" data-bs-toggle="tab" data-bs-target="#io-content" type="button">
+            <i class="fas fa-hdd me-1"></i>I/O Intensive Queries
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="cpu-tab" data-bs-toggle="tab" data-bs-target="#cpu-content" type="button">
+            <i class="fas fa-microchip me-1"></i>CPU Intensive Queries
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="trends-tab" data-bs-toggle="tab" data-bs-target="#trends-content" type="button">
+            <i class="fas fa-chart-line me-1"></i>Resource Trends
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="collections-tab" data-bs-toggle="tab" data-bs-target="#collections-content" type="button">
+            <i class="fas fa-database me-1"></i>Collection Usage
+        </button>
+    </li>
+</ul>
+
+<!-- Tab Content -->
+<div class="tab-content" id="resourceTabContent">
+    <!-- Memory Intensive Queries -->
+    <div class="tab-pane fade show active" id="memory-content" role="tabpanel">
+        {% if analysis.memory_intensive_queries %}
+        <div class="row">
+            {% for query_data in analysis.memory_intensive_queries[:10] %}
+            <div class="col-md-6 mb-4">
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-white">
+                        <h6 class="mb-0">
+                            <i class="fas fa-memory me-1"></i>Memory Score: {{ query_data.memory_score }}
+                            <span class="float-end">{{ query_data.estimated_memory_impact }}</span>
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-12">
+                                <strong>Collection:</strong> {{ query_data.query.namespace.split('.')[-1] }}<br>
+                                <strong>Duration:</strong> {{ query_data.query.duration_ms }}ms<br>
+                                <strong>Docs Examined:</strong> {{ "{:,}".format(query_data.query.docs_examined) }}<br>
+                                <strong>Docs Returned:</strong> {{ "{:,}".format(query_data.query.docs_returned) }}
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="reasons">
+                            <strong>Memory Impact Reasons:</strong>
+                            <ul class="mb-0">
+                                {% for reason in query_data.reasons %}
+                                <li>{{ reason }}</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-success" role="alert">
+            <i class="fas fa-check-circle me-2"></i>No memory-intensive queries detected. Good job!
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- I/O Intensive Queries -->
+    <div class="tab-pane fade" id="io-content" role="tabpanel">
+        {% if analysis.io_intensive_queries %}
+        <div class="row">
+            {% for query_data in analysis.io_intensive_queries[:10] %}
+            <div class="col-md-6 mb-4">
+                <div class="card border-info">
+                    <div class="card-header bg-info text-white">
+                        <h6 class="mb-0">
+                            <i class="fas fa-hdd me-1"></i>I/O Score: {{ query_data.io_score }}
+                            <span class="float-end">{{ query_data.estimated_io_impact }}</span>
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-12">
+                                <strong>Collection:</strong> {{ query_data.query.namespace.split('.')[-1] }}<br>
+                                <strong>Duration:</strong> {{ query_data.query.duration_ms }}ms<br>
+                                <strong>Docs Examined:</strong> {{ "{:,}".format(query_data.query.docs_examined) }}<br>
+                                <strong>Keys Examined:</strong> {{ "{:,}".format(query_data.query.keys_examined) }}<br>
+                                <strong>Plan Summary:</strong> <span class="badge bg-secondary">{{ query_data.query.plan_summary }}</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="reasons">
+                            <strong>I/O Impact Reasons:</strong>
+                            <ul class="mb-0">
+                                {% for reason in query_data.reasons %}
+                                <li>{{ reason }}</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-success" role="alert">
+            <i class="fas fa-check-circle me-2"></i>No I/O-intensive queries detected. Excellent performance!
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- CPU Intensive Queries -->
+    <div class="tab-pane fade" id="cpu-content" role="tabpanel">
+        {% if analysis.cpu_intensive_queries %}
+        <div class="row">
+            {% for query_data in analysis.cpu_intensive_queries[:10] %}
+            <div class="col-md-6 mb-4">
+                <div class="card border-danger">
+                    <div class="card-header bg-danger text-white">
+                        <h6 class="mb-0">
+                            <i class="fas fa-microchip me-1"></i>CPU Score: {{ query_data.cpu_score }}
+                            <span class="float-end">{{ query_data.estimated_cpu_impact }}</span>
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-12">
+                                <strong>Collection:</strong> {{ query_data.query.namespace.split('.')[-1] }}<br>
+                                <strong>Duration:</strong> {{ query_data.query.duration_ms }}ms<br>
+                                <strong>Docs Examined:</strong> {{ "{:,}".format(query_data.query.docs_examined) }}<br>
+                                <strong>Docs Returned:</strong> {{ "{:,}".format(query_data.query.docs_returned) }}<br>
+                                <strong>Selectivity:</strong> {{ "%.2f"|format((query_data.query.docs_returned / (query_data.query.docs_examined or 1)) * 100) }}%
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="reasons">
+                            <strong>CPU Impact Reasons:</strong>
+                            <ul class="mb-0">
+                                {% for reason in query_data.reasons %}
+                                <li>{{ reason }}</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-success" role="alert">
+            <i class="fas fa-check-circle me-2"></i>No CPU-intensive queries detected. Great optimization!
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Resource Trends -->
+    <div class="tab-pane fade" id="trends-content" role="tabpanel">
+        {% if analysis.resource_trends %}
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-chart-line me-2"></i>Hourly Resource Usage Trends</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Time Period</th>
+                                <th>Query Count</th>
+                                <th>Avg Duration (ms)</th>
+                                <th>Avg Docs Examined</th>
+                                <th>Resource Load</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for period, stats in analysis.resource_trends.items() %}
+                            <tr>
+                                <td>{{ period }}</td>
+                                <td>{{ stats.total_queries }}</td>
+                                <td>{{ "%.0f"|format(stats.avg_duration) }}</td>
+                                <td>{{ "%.0f"|format(stats.avg_docs_examined) }}</td>
+                                <td>
+                                    {% set load_level = 'low' if stats.total_queries < 5 else ('medium' if stats.total_queries < 15 else 'high') %}
+                                    <span class="badge {% if load_level == 'high' %}bg-danger{% elif load_level == 'medium' %}bg-warning{% else %}bg-success{% endif %}">
+                                        {{ load_level|title }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="alert alert-info" role="alert">
+            <i class="fas fa-info-circle me-2"></i>No resource trend data available. Upload more log data with timestamps.
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Collection Resource Usage -->
+    <div class="tab-pane fade" id="collections-content" role="tabpanel">
+        {% if analysis.collection_resource_usage %}
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-database me-2"></i>Resource Usage by Collection</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    {% for collection, stats in analysis.collection_resource_usage.items() %}
+                    <div class="col-md-6 col-lg-4 mb-4">
+                        <div class="card border-primary">
+                            <div class="card-header bg-primary text-white">
+                                <h6 class="mb-0">
+                                    <i class="fas fa-database me-1"></i>{{ collection }}
+                                </h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row text-center">
+                                    <div class="col-6">
+                                        <div class="metric">
+                                            <div class="h5 text-primary">{{ stats.query_count }}</div>
+                                            <small class="text-muted">Queries</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="metric">
+                                            <div class="h5 text-warning">{{ "%.0f"|format(stats.avg_duration) }}ms</div>
+                                            <small class="text-muted">Avg Duration</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <hr class="my-2">
+                                <div class="row text-center">
+                                    <div class="col-6">
+                                        <div class="metric">
+                                            <div class="h6 text-info">{{ "%.0f"|format(stats.avg_docs_examined) }}</div>
+                                            <small class="text-muted">Avg Docs Examined</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="metric">
+                                            <div class="h6 text-success">{{ "%.1f"|format(stats.total_memory_estimate) }}MB</div>
+                                            <small class="text-muted">Est. Memory</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="alert alert-info" role="alert">
+            <i class="fas fa-info-circle me-2"></i>No collection resource usage data available.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function exportResourceData() {
+    const activeTab = document.querySelector('.nav-link.active').id;
+    let data = [];
+    let filename = 'mongodb_resource_analysis';
+    
+    switch(activeTab) {
+        case 'memory-tab':
+            // Export memory intensive queries
+            {% if analysis.memory_intensive_queries %}
+            data = [
+                ['Collection', 'Memory Score', 'Duration (ms)', 'Docs Examined', 'Docs Returned', 'Memory Impact', 'Reasons']
+            ];
+            {% for query_data in analysis.memory_intensive_queries %}
+            data.push([
+                "{{ query_data.query.namespace.split('.')[-1] }}",
+                "{{ query_data.memory_score }}",
+                "{{ query_data.query.duration_ms }}",
+                "{{ query_data.query.docs_examined }}",
+                "{{ query_data.query.docs_returned }}",
+                "{{ query_data.estimated_memory_impact }}",
+                "{{ query_data.reasons|join('; ') }}"
+            ]);
+            {% endfor %}
+            {% endif %}
+            filename += '_memory_intensive';
+            break;
+        case 'io-tab':
+            // Export I/O intensive queries
+            {% if analysis.io_intensive_queries %}
+            data = [
+                ['Collection', 'I/O Score', 'Duration (ms)', 'Docs Examined', 'Keys Examined', 'I/O Impact', 'Reasons']
+            ];
+            {% for query_data in analysis.io_intensive_queries %}
+            data.push([
+                "{{ query_data.query.namespace.split('.')[-1] }}",
+                "{{ query_data.io_score }}",
+                "{{ query_data.query.duration_ms }}",
+                "{{ query_data.query.docs_examined }}",
+                "{{ query_data.query.keys_examined }}",
+                "{{ query_data.estimated_io_impact }}",
+                "{{ query_data.reasons|join('; ') }}"
+            ]);
+            {% endfor %}
+            {% endif %}
+            filename += '_io_intensive';
+            break;
+        case 'cpu-tab':
+            // Export CPU intensive queries
+            {% if analysis.cpu_intensive_queries %}
+            data = [
+                ['Collection', 'CPU Score', 'Duration (ms)', 'Docs Examined', 'Docs Returned', 'CPU Impact', 'Reasons']
+            ];
+            {% for query_data in analysis.cpu_intensive_queries %}
+            data.push([
+                "{{ query_data.query.namespace.split('.')[-1] }}",
+                "{{ query_data.cpu_score }}",
+                "{{ query_data.query.duration_ms }}",
+                "{{ query_data.query.docs_examined }}",
+                "{{ query_data.query.docs_returned }}",
+                "{{ query_data.estimated_cpu_impact }}",
+                "{{ query_data.reasons|join('; ') }}"
+            ]);
+            {% endfor %}
+            {% endif %}
+            filename += '_cpu_intensive';
+            break;
+        case 'collections-tab':
+            // Export collection resource usage
+            {% if analysis.collection_resource_usage %}
+            data = [
+                ['Collection', 'Query Count', 'Avg Duration (ms)', 'Avg Docs Examined', 'Total Memory Estimate (MB)']
+            ];
+            {% for collection, stats in analysis.collection_resource_usage.items() %}
+            data.push([
+                "{{ collection }}",
+                "{{ stats.query_count }}",
+                "{{ "%.0f"|format(stats.avg_duration) }}",
+                "{{ "%.0f"|format(stats.avg_docs_examined) }}",
+                "{{ "%.1f"|format(stats.total_memory_estimate) }}"
+            ]);
+            {% endfor %}
+            {% endif %}
+            filename += '_collection_usage';
+            break;
+    }
+    
+    if (data.length <= 1) {
+        alert('No data to export for this tab');
+        return;
+    }
+    
+    const csvContent = data.map(row => 
+        row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
+    ).join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+}
+
+// Bootstrap tab functionality (if not already loaded)
+document.addEventListener('DOMContentLoaded', function() {
+    const triggerTabList = [].slice.call(document.querySelectorAll('#resourceTabs button'))
+    triggerTabList.forEach(function(triggerEl) {
+        const tabTrigger = new bootstrap.Tab(triggerEl);
+        
+        triggerEl.addEventListener('click', function(event) {
+            event.preventDefault();
+            tabTrigger.show();
+        });
+    });
+});
+</script>
+
+<style>
+.metric {
+    padding: 0.5rem 0;
+}
+
+.metric .h5, .metric .h6 {
+    margin-bottom: 0.25rem;
+    font-weight: bold;
+}
+
+.card.border-warning .card-header,
+.card.border-info .card-header,
+.card.border-danger .card-header,
+.card.border-primary .card-header {
+    color: white !important;
+}
+
+.reasons ul {
+    font-size: 0.9em;
+}
+
+.nav-tabs .nav-link {
+    color: #495057;
+}
+
+.nav-tabs .nav-link.active {
+    color: #495057;
+    background-color: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+}
+</style>
+
+{% endblock %}

@@ -1710,9 +1710,9 @@ class MongoLogAnalyzer:
             'nReturned' in query or 'n_returned' in query or 
             'keysExamined' in query or 'keys_examined' in query):
             return {
-                'docsExamined': (query.get('docsExamined') or query.get('docs_examined') or 0),
-                'keysExamined': (query.get('keysExamined') or query.get('keys_examined') or 0), 
-                'nReturned': (query.get('nReturned') or query.get('n_returned') or 0),
+                'docsExamined': (query.get('docsExamined') if query.get('docsExamined') is not None else query.get('docs_examined') if query.get('docs_examined') is not None else 0),
+                'keysExamined': (query.get('keysExamined') if query.get('keysExamined') is not None else query.get('keys_examined') if query.get('keys_examined') is not None else 0), 
+                'nReturned': (query.get('nReturned') if query.get('nReturned') is not None else query.get('n_returned') if query.get('n_returned') is not None else 0),
                 'cpuNanos': query.get('cpuNanos', 0),
                 'planCacheKey': query.get('planCacheKey', ''),
                 'queryFramework': query.get('queryFramework', ''),
@@ -1729,28 +1729,28 @@ class MongoLogAnalyzer:
                 
                 # Extract metrics with multiple possible field names
                 docs_examined = (
-                    attr.get('docsExamined') or 
-                    attr.get('docs_examined') or
-                    attr.get('totalDocsExamined') or 
-                    attr.get('executionStats', {}).get('docsExamined') or
-                    attr.get('command', {}).get('docsExamined') or 0
+                    attr.get('docsExamined') if attr.get('docsExamined') is not None else
+                    attr.get('docs_examined') if attr.get('docs_examined') is not None else
+                    attr.get('totalDocsExamined') if attr.get('totalDocsExamined') is not None else
+                    attr.get('executionStats', {}).get('docsExamined') if attr.get('executionStats', {}).get('docsExamined') is not None else
+                    attr.get('command', {}).get('docsExamined') if attr.get('command', {}).get('docsExamined') is not None else 0
                 )
                 
                 keys_examined = (
-                    attr.get('keysExamined') or 
-                    attr.get('keys_examined') or
-                    attr.get('totalKeysExamined') or 
-                    attr.get('executionStats', {}).get('keysExamined') or
-                    attr.get('command', {}).get('keysExamined') or 0
+                    attr.get('keysExamined') if attr.get('keysExamined') is not None else
+                    attr.get('keys_examined') if attr.get('keys_examined') is not None else
+                    attr.get('totalKeysExamined') if attr.get('totalKeysExamined') is not None else
+                    attr.get('executionStats', {}).get('keysExamined') if attr.get('executionStats', {}).get('keysExamined') is not None else
+                    attr.get('command', {}).get('keysExamined') if attr.get('command', {}).get('keysExamined') is not None else 0
                 )
                 
                 n_returned = (
-                    attr.get('nReturned') or 
-                    attr.get('n_returned') or
-                    attr.get('nreturned') or 
-                    attr.get('numReturned') or 
-                    attr.get('executionStats', {}).get('nReturned') or
-                    attr.get('command', {}).get('nReturned') or 0
+                    attr.get('nReturned') if attr.get('nReturned') is not None else
+                    attr.get('n_returned') if attr.get('n_returned') is not None else
+                    attr.get('nreturned') if attr.get('nreturned') is not None else
+                    attr.get('numReturned') if attr.get('numReturned') is not None else
+                    attr.get('executionStats', {}).get('nReturned') if attr.get('executionStats', {}).get('nReturned') is not None else
+                    attr.get('command', {}).get('nReturned') if attr.get('command', {}).get('nReturned') is not None else 0
                 )
                 
                 return {
@@ -3127,6 +3127,1182 @@ def _generate_current_op_recommendations(analysis):
             })
     
     return recommendations
+
+
+# Enhanced Index Recommendation Engine - Independent Implementation
+class EnhancedIndexAnalyzer:
+    """Advanced index recommendation engine with intelligent query parsing and performance impact analysis"""
+    
+    def __init__(self, mongo_analyzer):
+        self.mongo_analyzer = mongo_analyzer
+        self.recommendations = []
+        
+    def analyze_queries_advanced(self):
+        """Main entry point for enhanced index analysis"""
+        if not self.mongo_analyzer.slow_queries:
+            return []
+            
+        # Group queries by pattern for comprehensive analysis
+        query_patterns = self._group_by_enhanced_pattern()
+        
+        # Generate smart recommendations
+        recommendations = []
+        for pattern_key, pattern_data in query_patterns.items():
+            pattern_recommendations = self._analyze_pattern_advanced(pattern_data)
+            recommendations.extend(pattern_recommendations)
+        
+        # Remove duplicates and prioritize
+        recommendations = self._deduplicate_recommendations(recommendations)
+        recommendations = self._prioritize_by_impact(recommendations)
+        
+        return recommendations
+    
+    def _group_by_enhanced_pattern(self):
+        """Group queries by enhanced patterns considering structure and performance"""
+        patterns = {}
+        
+        for query in self.mongo_analyzer.slow_queries:
+            # Create enhanced pattern key
+            pattern_key = self._create_enhanced_pattern_key(query)
+            
+            if pattern_key not in patterns:
+                patterns[pattern_key] = {
+                    'queries': [],
+                    'total_executions': 0,
+                    'total_duration': 0,
+                    'total_docs_examined': 0,
+                    'total_returned': 0,
+                    'database': query.get('database', 'unknown'),
+                    'collection': query.get('collection', 'unknown'),
+                    'query_structure': self._extract_query_structure(query),
+                    'plan_summary': query.get('plan_summary', 'None')
+                }
+            
+            pattern = patterns[pattern_key]
+            pattern['queries'].append(query)
+            pattern['total_executions'] += 1
+            pattern['total_duration'] += query.get('duration', 0)
+            pattern['total_docs_examined'] += query.get('docsExamined', 0)
+            pattern['total_returned'] += query.get('nReturned', 0)
+        
+        return patterns
+    
+    def _create_enhanced_pattern_key(self, query):
+        """Create intelligent pattern key for better grouping"""
+        database = query.get('database', 'unknown')
+        collection = query.get('collection', 'unknown')
+        
+        # Parse query structure
+        query_text = query.get('query', '{}')
+        try:
+            query_obj = json.loads(query_text)
+            structure_hash = self._hash_query_structure(query_obj)
+        except:
+            structure_hash = hash(query_text)
+        
+        return f"{database}.{collection}_{abs(structure_hash)}"
+    
+    def _hash_query_structure(self, query_obj):
+        """Create hash based on query structure, not values"""
+        def normalize_structure(obj):
+            if isinstance(obj, dict):
+                normalized = {}
+                for key, value in obj.items():
+                    if key.startswith('$'):
+                        normalized[key] = normalize_structure(value)
+                    else:
+                        normalized[key] = type(value).__name__
+                return normalized
+            elif isinstance(obj, list):
+                return [normalize_structure(item) for item in obj[:3]]  # Limit list size
+            else:
+                return type(obj).__name__
+        
+        normalized = normalize_structure(query_obj)
+        return hash(json.dumps(normalized, sort_keys=True))
+    
+    def _extract_query_structure(self, query):
+        """Extract and parse query structure for analysis"""
+        query_text = query.get('query', '{}')
+        try:
+            query_obj = json.loads(query_text)
+            return self._parse_query_structure(query_obj)
+        except:
+            return {'type': 'unknown', 'fields': [], 'operations': []}
+    
+    def _parse_query_structure(self, query_obj):
+        """Intelligently parse query structure"""
+        structure = {
+            'type': 'unknown',
+            'fields': [],
+            'operations': [],
+            'sort_fields': [],
+            'projected_fields': [],
+            'aggregation_stages': []
+        }
+        
+        if 'find' in query_obj:
+            structure['type'] = 'find'
+            filter_obj = query_obj.get('filter', {})
+            structure['fields'].extend(self._extract_filter_fields(filter_obj))
+            
+            sort_obj = query_obj.get('sort', {})
+            if sort_obj:
+                structure['sort_fields'] = list(sort_obj.keys())
+                
+            projection = query_obj.get('projection', {})
+            if projection:
+                structure['projected_fields'] = list(projection.keys())
+                
+        elif 'aggregate' in query_obj:
+            structure['type'] = 'aggregate'
+            pipeline = query_obj.get('pipeline', [])
+            
+            for stage in pipeline:
+                if '$match' in stage:
+                    match_fields = self._extract_filter_fields(stage['$match'])
+                    structure['fields'].extend(match_fields)
+                    structure['aggregation_stages'].append('$match')
+                elif '$sort' in stage:
+                    structure['sort_fields'].extend(list(stage['$sort'].keys()))
+                    structure['aggregation_stages'].append('$sort')
+                elif '$group' in stage:
+                    group_obj = stage['$group']
+                    if '_id' in group_obj:
+                        if isinstance(group_obj['_id'], str) and group_obj['_id'].startswith('$'):
+                            structure['fields'].append(group_obj['_id'][1:])  # Remove $
+                        elif isinstance(group_obj['_id'], dict):
+                            for key, value in group_obj['_id'].items():
+                                if isinstance(value, str) and value.startswith('$'):
+                                    structure['fields'].append(value[1:])
+                    structure['aggregation_stages'].append('$group')
+                else:
+                    for stage_name in stage.keys():
+                        if stage_name not in structure['aggregation_stages']:
+                            structure['aggregation_stages'].append(stage_name)
+        
+        return structure
+    
+    def _extract_filter_fields(self, filter_obj, path=""):
+        """Recursively extract fields from complex filter conditions"""
+        fields = []
+        
+        if not isinstance(filter_obj, dict):
+            return fields
+        
+        for key, value in filter_obj.items():
+            current_path = f"{path}.{key}" if path else key
+            
+            if key == '$and':
+                if isinstance(value, list):
+                    for condition in value:
+                        fields.extend(self._extract_filter_fields(condition, path))
+            elif key == '$or':
+                if isinstance(value, list):
+                    for condition in value:
+                        fields.extend(self._extract_filter_fields(condition, path))
+            elif key == '$nor':
+                if isinstance(value, list):
+                    for condition in value:
+                        fields.extend(self._extract_filter_fields(condition, path))
+            elif key.startswith('$'):
+                # Skip other operators
+                continue
+            else:
+                fields.append(current_path)
+                
+                # Handle nested conditions
+                if isinstance(value, dict):
+                    for sub_key, sub_value in value.items():
+                        if sub_key.startswith('$'):
+                            # Field has operator like {field: {$gt: 10}}
+                            continue
+                        else:
+                            # Nested object field
+                            fields.extend(self._extract_filter_fields({sub_key: sub_value}, current_path))
+        
+        return fields
+    
+    def _analyze_pattern_advanced(self, pattern_data):
+        """Generate intelligent recommendations for a query pattern"""
+        recommendations = []
+        structure = pattern_data['query_structure']
+        
+        # Calculate performance metrics
+        avg_duration = pattern_data['total_duration'] / pattern_data['total_executions']
+        
+        if pattern_data['total_docs_examined'] > 0:
+            selectivity = (pattern_data['total_returned'] / pattern_data['total_docs_examined']) * 100
+        else:
+            selectivity = 0
+            
+        # Determine urgency based on performance
+        if pattern_data['plan_summary'] == 'COLLSCAN':
+            urgency = 'critical'
+            performance_impact = 'high'
+        elif selectivity < 1.0:
+            urgency = 'high'
+            performance_impact = 'high'
+        elif avg_duration > 1000:
+            urgency = 'medium'
+            performance_impact = 'medium'
+        else:
+            urgency = 'low'
+            performance_impact = 'low'
+        
+        # Generate field-specific recommendations
+        if structure['fields']:
+            recommendations.extend(
+                self._generate_field_recommendations(
+                    pattern_data, structure['fields'], urgency, performance_impact
+                )
+            )
+        
+        # Generate sort recommendations
+        if structure['sort_fields']:
+            recommendations.extend(
+                self._generate_sort_recommendations(
+                    pattern_data, structure['sort_fields'], urgency, performance_impact
+                )
+            )
+        
+        # Generate compound index recommendations
+        if structure['fields'] and structure['sort_fields']:
+            recommendations.extend(
+                self._generate_compound_recommendations(
+                    pattern_data, structure['fields'], structure['sort_fields'], urgency, performance_impact
+                )
+            )
+        
+        # Generate aggregation-specific recommendations
+        if structure['type'] == 'aggregate':
+            recommendations.extend(
+                self._generate_aggregation_recommendations(
+                    pattern_data, structure, urgency, performance_impact
+                )
+            )
+        
+        return recommendations
+    
+    def _generate_field_recommendations(self, pattern_data, fields, urgency, performance_impact):
+        """Generate single field index recommendations"""
+        recommendations = []
+        
+        for field in fields[:5]:  # Limit to top 5 fields to avoid spam
+            estimated_improvement = self._estimate_performance_improvement(
+                pattern_data, 'single_field', [field]
+            )
+            
+            recommendations.append({
+                'type': 'single_field_index',
+                'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
+                'index_definition': {field: 1},
+                'command': f"db.{pattern_data['collection']}.createIndex({{{field}: 1}})",
+                'reason': f"Filter condition on '{field}'",
+                'urgency': urgency,
+                'performance_impact': performance_impact,
+                'estimated_improvement': estimated_improvement,
+                'affected_queries': pattern_data['total_executions'],
+                'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
+                'selectivity': (pattern_data['total_returned'] / max(pattern_data['total_docs_examined'], 1)) * 100,
+                'docs_examined_avg': pattern_data['total_docs_examined'] / pattern_data['total_executions']
+            })
+        
+        return recommendations
+    
+    def _generate_sort_recommendations(self, pattern_data, sort_fields, urgency, performance_impact):
+        """Generate sort index recommendations"""
+        recommendations = []
+        
+        # Single field sort indexes
+        for field in sort_fields[:3]:
+            estimated_improvement = self._estimate_performance_improvement(
+                pattern_data, 'sort', [field]
+            )
+            
+            recommendations.append({
+                'type': 'sort_index',
+                'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
+                'index_definition': {field: -1},  # Assume descending for recency
+                'command': f"db.{pattern_data['collection']}.createIndex({{{field}: -1}})",
+                'reason': f"Sort optimization for '{field}'",
+                'urgency': urgency,
+                'performance_impact': performance_impact,
+                'estimated_improvement': estimated_improvement,
+                'affected_queries': pattern_data['total_executions'],
+                'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
+                'benefit': 'Eliminates in-memory sorting'
+            })
+        
+        return recommendations
+    
+    def _generate_compound_recommendations(self, pattern_data, filter_fields, sort_fields, urgency, performance_impact):
+        """Generate intelligent compound index recommendations"""
+        recommendations = []
+        
+        # Generate optimal compound indexes (filter fields first, then sort)
+        for filter_field in filter_fields[:2]:
+            for sort_field in sort_fields[:2]:
+                if filter_field != sort_field:
+                    estimated_improvement = self._estimate_performance_improvement(
+                        pattern_data, 'compound', [filter_field, sort_field]
+                    )
+                    
+                    recommendations.append({
+                        'type': 'compound_index',
+                        'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
+                        'index_definition': {filter_field: 1, sort_field: -1},
+                        'command': f"db.{pattern_data['collection']}.createIndex({{{filter_field}: 1, {sort_field}: -1}})",
+                        'reason': f"Optimal compound index for filter on '{filter_field}' and sort by '{sort_field}'",
+                        'urgency': urgency,
+                        'performance_impact': performance_impact,
+                        'estimated_improvement': estimated_improvement,
+                        'affected_queries': pattern_data['total_executions'],
+                        'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
+                        'benefit': 'Combines filtering and sorting in single index traversal'
+                    })
+        
+        return recommendations
+    
+    def _generate_aggregation_recommendations(self, pattern_data, structure, urgency, performance_impact):
+        """Generate aggregation-specific recommendations"""
+        recommendations = []
+        
+        # Early $match stage optimization
+        if '$match' in structure['aggregation_stages'] and structure['fields']:
+            for field in structure['fields'][:3]:
+                estimated_improvement = self._estimate_performance_improvement(
+                    pattern_data, 'aggregation_match', [field]
+                )
+                
+                recommendations.append({
+                    'type': 'aggregation_index',
+                    'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
+                    'index_definition': {field: 1},
+                    'command': f"db.{pattern_data['collection']}.createIndex({{{field}: 1}})",
+                    'reason': f"Optimize $match stage filtering on '{field}'",
+                    'urgency': urgency,
+                    'performance_impact': performance_impact,
+                    'estimated_improvement': estimated_improvement,
+                    'affected_queries': pattern_data['total_executions'],
+                    'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
+                    'benefit': 'Reduces documents processed in aggregation pipeline'
+                })
+        
+        return recommendations
+    
+    def _estimate_performance_improvement(self, pattern_data, recommendation_type, fields):
+        """Estimate potential performance improvement"""
+        current_selectivity = (pattern_data['total_returned'] / max(pattern_data['total_docs_examined'], 1)) * 100
+        
+        if pattern_data['plan_summary'] == 'COLLSCAN':
+            if recommendation_type == 'single_field':
+                return f"50-90% faster (eliminate collection scan)"
+            elif recommendation_type == 'compound':
+                return f"70-95% faster (optimal index usage)"
+            elif recommendation_type == 'sort':
+                return f"40-80% faster (eliminate in-memory sort)"
+            else:
+                return f"30-70% faster"
+        elif current_selectivity < 1.0:
+            return f"30-60% faster (improve selectivity from {current_selectivity:.2f}%)"
+        elif current_selectivity < 10.0:
+            return f"15-40% faster (improve selectivity from {current_selectivity:.2f}%)"
+        else:
+            return f"5-20% faster (minor optimization)"
+    
+    def _deduplicate_recommendations(self, recommendations):
+        """Remove duplicate recommendations"""
+        seen = set()
+        unique_recommendations = []
+        
+        for rec in recommendations:
+            # Create key based on collection and index definition
+            key = f"{rec['collection']}_{json.dumps(rec['index_definition'], sort_keys=True)}"
+            
+            if key not in seen:
+                seen.add(key)
+                unique_recommendations.append(rec)
+        
+        return unique_recommendations
+    
+    def _prioritize_by_impact(self, recommendations):
+        """Sort recommendations by potential impact"""
+        def impact_score(rec):
+            urgency_scores = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
+            performance_scores = {'high': 3, 'medium': 2, 'low': 1}
+            
+            urgency_score = urgency_scores.get(rec['urgency'], 1)
+            performance_score = performance_scores.get(rec['performance_impact'], 1)
+            frequency_score = min(rec['affected_queries'] / 10, 3)  # Cap at 3
+            
+            return urgency_score * performance_score * frequency_score
+        
+        return sorted(recommendations, key=impact_score, reverse=True)
+
+
+class TrendAnalyzer:
+    """Analyze performance trends over time for unique queries"""
+    
+    def __init__(self, slow_queries):
+        self.slow_queries = slow_queries
+        self.unique_queries = {}
+        self._group_queries_by_pattern()
+    
+    def _group_queries_by_pattern(self):
+        """Group queries by their unique patterns"""
+        for query in self.slow_queries:
+            pattern_key = self._generate_query_pattern(query)
+            if pattern_key not in self.unique_queries:
+                self.unique_queries[pattern_key] = {
+                    'pattern': pattern_key,
+                    'collection': query.get('namespace', '').split('.')[-1],
+                    'database': query.get('namespace', '').split('.')[0],
+                    'query_structure': self._extract_query_structure(query),
+                    'executions': []
+                }
+            
+            # Add this execution to the pattern
+            self.unique_queries[pattern_key]['executions'].append({
+                'timestamp': query.get('timestamp'),
+                'duration': query.get('duration_ms', 0),
+                'docs_examined': query.get('docs_examined', 0),
+                'docs_returned': query.get('docs_returned', 0),
+                'keys_examined': query.get('keys_examined', 0),
+                'plan_summary': query.get('plan_summary', ''),
+                'selectivity': (query.get('docs_returned', 0) / max(query.get('docs_examined', 1), 1)) * 100
+            })
+    
+    def _generate_query_pattern(self, query):
+        """Generate a unique pattern key for the query"""
+        collection = query.get('namespace', '').split('.')[-1]
+        command_info = query.get('command_info', {})
+        
+        if isinstance(command_info, dict):
+            # Extract filter pattern
+            filter_pattern = command_info.get('filter', {})
+            sort_pattern = command_info.get('sort', {})
+            
+            # Create normalized pattern
+            pattern_parts = []
+            if filter_pattern:
+                pattern_parts.append(f"filter:{self._normalize_pattern(filter_pattern)}")
+            if sort_pattern:
+                pattern_parts.append(f"sort:{self._normalize_pattern(sort_pattern)}")
+            
+            return f"{collection}::{':'.join(pattern_parts)}"
+        
+        return f"{collection}::unknown_pattern"
+    
+    def _normalize_pattern(self, pattern):
+        """Normalize query pattern by replacing values with placeholders"""
+        if isinstance(pattern, dict):
+            normalized = {}
+            for key, value in pattern.items():
+                if isinstance(value, dict):
+                    normalized[key] = self._normalize_pattern(value)
+                else:
+                    normalized[key] = "?"
+            return str(sorted(normalized.items()))
+        return "?"
+    
+    def _extract_query_structure(self, query):
+        """Extract readable query structure"""
+        command_info = query.get('command_info', {})
+        if isinstance(command_info, dict):
+            structure = {}
+            if 'filter' in command_info:
+                structure['filter'] = list(command_info['filter'].keys()) if isinstance(command_info['filter'], dict) else []
+            if 'sort' in command_info:
+                structure['sort'] = list(command_info['sort'].keys()) if isinstance(command_info['sort'], dict) else []
+            return structure
+        return {}
+    
+    def get_trend_analysis(self):
+        """Get trend analysis for all unique queries"""
+        trends = []
+        
+        for pattern_key, pattern_data in self.unique_queries.items():
+            if len(pattern_data['executions']) < 2:
+                continue  # Need at least 2 executions for trend
+            
+            # Sort executions by timestamp
+            executions = sorted(pattern_data['executions'], key=lambda x: x['timestamp'] or '')
+            
+            # Calculate trend metrics
+            durations = [e['duration'] for e in executions]
+            selectivities = [e['selectivity'] for e in executions]
+            docs_examined = [e['docs_examined'] for e in executions]
+            
+            trend = {
+                'pattern_key': pattern_key,
+                'collection': pattern_data['collection'],
+                'database': pattern_data['database'],
+                'query_structure': pattern_data['query_structure'],
+                'total_executions': len(executions),
+                'time_span': self._calculate_time_span(executions),
+                'avg_duration': sum(durations) / len(durations),
+                'min_duration': min(durations),
+                'max_duration': max(durations),
+                'duration_trend': self._calculate_trend(durations),
+                'avg_selectivity': sum(selectivities) / len(selectivities),
+                'selectivity_trend': self._calculate_trend(selectivities),
+                'avg_docs_examined': sum(docs_examined) / len(docs_examined),
+                'docs_examined_trend': self._calculate_trend(docs_examined),
+                'executions': executions[-10:],  # Last 10 executions for chart
+                'performance_status': self._determine_performance_status(durations, selectivities),
+                'recommendations': self._generate_trend_recommendations(durations, selectivities, docs_examined)
+            }
+            trends.append(trend)
+        
+        return sorted(trends, key=lambda x: x['avg_duration'], reverse=True)
+    
+    def _calculate_time_span(self, executions):
+        """Calculate time span between first and last execution"""
+        if len(executions) < 2:
+            return "N/A"
+        
+        try:
+            first_time = executions[0]['timestamp']
+            last_time = executions[-1]['timestamp']
+            if first_time and last_time:
+                # Simple string comparison for now
+                return f"{first_time} to {last_time}"
+        except:
+            pass
+        return "Unknown"
+    
+    def _calculate_trend(self, values):
+        """Calculate trend direction (improving, degrading, stable)"""
+        if len(values) < 3:
+            return "insufficient_data"
+        
+        # Simple trend calculation - compare first third vs last third
+        first_third = values[:len(values)//3]
+        last_third = values[-len(values)//3:]
+        
+        first_avg = sum(first_third) / len(first_third)
+        last_avg = sum(last_third) / len(last_third)
+        
+        change_percent = ((last_avg - first_avg) / first_avg) * 100 if first_avg > 0 else 0
+        
+        if change_percent > 15:
+            return "degrading"
+        elif change_percent < -15:
+            return "improving"
+        else:
+            return "stable"
+    
+    def _determine_performance_status(self, durations, selectivities):
+        """Determine overall performance status"""
+        avg_duration = sum(durations) / len(durations)
+        avg_selectivity = sum(selectivities) / len(selectivities)
+        
+        if avg_duration > 5000 or avg_selectivity < 1:
+            return "critical"
+        elif avg_duration > 1000 or avg_selectivity < 5:
+            return "warning"
+        else:
+            return "good"
+    
+    def _generate_trend_recommendations(self, durations, selectivities, docs_examined):
+        """Generate recommendations based on trends"""
+        recommendations = []
+        
+        duration_trend = self._calculate_trend(durations)
+        selectivity_trend = self._calculate_trend(selectivities)
+        
+        if duration_trend == "degrading":
+            recommendations.append("Query performance is degrading over time - consider index optimization")
+        
+        if selectivity_trend == "degrading":
+            recommendations.append("Query selectivity is decreasing - review data distribution and indexes")
+        
+        avg_docs_examined = sum(docs_examined) / len(docs_examined)
+        if avg_docs_examined > 10000:
+            recommendations.append("High document examination count - compound index may help")
+        
+        return recommendations
+
+
+class ResourceImpactAnalyzer:
+    """Analyze resource impact metrics"""
+    
+    def __init__(self, slow_queries):
+        self.slow_queries = slow_queries
+    
+    def get_resource_analysis(self):
+        """Analyze resource impact patterns"""
+        analysis = {
+            'memory_intensive_queries': self._find_memory_intensive_queries(),
+            'io_intensive_queries': self._find_io_intensive_queries(),
+            'cpu_intensive_queries': self._find_cpu_intensive_queries(),
+            'resource_trends': self._analyze_resource_trends(),
+            'collection_resource_usage': self._analyze_collection_resource_usage()
+        }
+        return analysis
+    
+    def _find_memory_intensive_queries(self):
+        """Find queries that likely use significant memory"""
+        memory_intensive = []
+        
+        for query in self.slow_queries:
+            docs_examined = query.get('docs_examined', 0)
+            docs_returned = query.get('docs_returned', 0)
+            duration = query.get('duration_ms', 0)
+            
+            # Heuristics for memory-intensive queries
+            memory_score = 0
+            reasons = []
+            
+            if docs_examined > 100000:
+                memory_score += 3
+                reasons.append("Large document scan")
+            
+            if docs_returned > 10000:
+                memory_score += 2
+                reasons.append("Large result set")
+            
+            if query.get('plan_summary', '').upper() == 'SORT':
+                memory_score += 2
+                reasons.append("In-memory sort operation")
+            
+            if duration > 10000 and docs_examined > docs_returned * 10:
+                memory_score += 1
+                reasons.append("Inefficient data processing")
+            
+            if memory_score >= 3:
+                memory_intensive.append({
+                    'query': query,
+                    'memory_score': memory_score,
+                    'reasons': reasons,
+                    'estimated_memory_impact': self._estimate_memory_usage(query)
+                })
+        
+        return sorted(memory_intensive, key=lambda x: x['memory_score'], reverse=True)
+    
+    def _find_io_intensive_queries(self):
+        """Find queries that are I/O intensive"""
+        io_intensive = []
+        
+        for query in self.slow_queries:
+            docs_examined = query.get('docs_examined', 0)
+            keys_examined = query.get('keys_examined', 0)
+            duration = query.get('duration_ms', 0)
+            
+            io_score = 0
+            reasons = []
+            
+            if docs_examined > 50000:
+                io_score += 3
+                reasons.append("High document examination count")
+            
+            if keys_examined > 100000:
+                io_score += 2
+                reasons.append("High key examination count")
+            
+            if query.get('plan_summary', '').upper() == 'COLLSCAN':
+                io_score += 3
+                reasons.append("Full collection scan")
+            
+            if duration > 5000 and docs_examined > 1000:
+                io_score += 1
+                reasons.append("Slow document retrieval")
+            
+            if io_score >= 3:
+                io_intensive.append({
+                    'query': query,
+                    'io_score': io_score,
+                    'reasons': reasons,
+                    'estimated_io_impact': f"{docs_examined + keys_examined:,} total examinations"
+                })
+        
+        return sorted(io_intensive, key=lambda x: x['io_score'], reverse=True)
+    
+    def _find_cpu_intensive_queries(self):
+        """Find queries that are CPU intensive"""
+        cpu_intensive = []
+        
+        for query in self.slow_queries:
+            duration = query.get('duration_ms', 0)
+            docs_examined = query.get('docs_examined', 0)
+            docs_returned = query.get('docs_returned', 0)
+            
+            cpu_score = 0
+            reasons = []
+            
+            # High duration with moderate I/O suggests CPU work
+            if duration > 5000 and docs_examined < 10000:
+                cpu_score += 2
+                reasons.append("High duration with low I/O")
+            
+            # Complex aggregation or text search
+            command_info = query.get('command_info', {})
+            if isinstance(command_info, dict):
+                if 'aggregate' in str(command_info).lower():
+                    cpu_score += 2
+                    reasons.append("Aggregation pipeline processing")
+                
+                if '$text' in str(command_info) or '$regex' in str(command_info):
+                    cpu_score += 2
+                    reasons.append("Text/regex processing")
+            
+            # High selectivity with long duration
+            selectivity = (docs_returned / max(docs_examined, 1)) * 100
+            if selectivity > 50 and duration > 2000:
+                cpu_score += 1
+                reasons.append("Processing overhead despite good selectivity")
+            
+            if cpu_score >= 2:
+                cpu_intensive.append({
+                    'query': query,
+                    'cpu_score': cpu_score,
+                    'reasons': reasons,
+                    'estimated_cpu_impact': f"{duration}ms processing time"
+                })
+        
+        return sorted(cpu_intensive, key=lambda x: x['cpu_score'], reverse=True)
+    
+    def _estimate_memory_usage(self, query):
+        """Estimate memory usage for a query"""
+        docs_examined = query.get('docs_examined', 0)
+        docs_returned = query.get('docs_returned', 0)
+        
+        # Rough estimation: average document size * documents processed
+        avg_doc_size = 2048  # Assume 2KB average document size
+        estimated_mb = ((docs_examined + docs_returned) * avg_doc_size) / (1024 * 1024)
+        
+        return f"~{estimated_mb:.1f}MB"
+    
+    def _analyze_resource_trends(self):
+        """Analyze resource usage trends"""
+        # Group by hour for trend analysis
+        hourly_stats = {}
+        
+        for query in self.slow_queries:
+            timestamp = query.get('timestamp', '')
+            if timestamp:
+                # Extract hour from timestamp (simplified)
+                hour = timestamp[:13] if len(timestamp) > 13 else timestamp
+                
+                if hour not in hourly_stats:
+                    hourly_stats[hour] = {
+                        'total_queries': 0,
+                        'total_duration': 0,
+                        'total_docs_examined': 0,
+                        'avg_duration': 0,
+                        'avg_docs_examined': 0
+                    }
+                
+                hourly_stats[hour]['total_queries'] += 1
+                hourly_stats[hour]['total_duration'] += query.get('duration_ms', 0)
+                hourly_stats[hour]['total_docs_examined'] += query.get('docs_examined', 0)
+        
+        # Calculate averages
+        for hour_data in hourly_stats.values():
+            if hour_data['total_queries'] > 0:
+                hour_data['avg_duration'] = hour_data['total_duration'] / hour_data['total_queries']
+                hour_data['avg_docs_examined'] = hour_data['total_docs_examined'] / hour_data['total_queries']
+        
+        return hourly_stats
+    
+    def _analyze_collection_resource_usage(self):
+        """Analyze resource usage by collection"""
+        collection_stats = {}
+        
+        for query in self.slow_queries:
+            collection = query.get('namespace', '').split('.')[-1]
+            
+            if collection not in collection_stats:
+                collection_stats[collection] = {
+                    'query_count': 0,
+                    'total_duration': 0,
+                    'total_docs_examined': 0,
+                    'total_memory_estimate': 0,
+                    'avg_duration': 0,
+                    'avg_docs_examined': 0
+                }
+            
+            stats = collection_stats[collection]
+            stats['query_count'] += 1
+            stats['total_duration'] += query.get('duration_ms', 0)
+            stats['total_docs_examined'] += query.get('docs_examined', 0)
+            
+            # Estimate memory usage
+            docs_examined = query.get('docs_examined', 0)
+            docs_returned = query.get('docs_returned', 0)
+            estimated_memory = ((docs_examined + docs_returned) * 2048) / (1024 * 1024)
+            stats['total_memory_estimate'] += estimated_memory
+        
+        # Calculate averages
+        for collection, stats in collection_stats.items():
+            if stats['query_count'] > 0:
+                stats['avg_duration'] = stats['total_duration'] / stats['query_count']
+                stats['avg_docs_examined'] = stats['total_docs_examined'] / stats['query_count']
+        
+        return collection_stats
+
+
+class WorkloadHotspotAnalyzer:
+    """Analyze workload patterns and detect hotspots"""
+    
+    def __init__(self, slow_queries):
+        self.slow_queries = slow_queries
+    
+    def get_hotspot_analysis(self):
+        """Get comprehensive hotspot analysis"""
+        analysis = {
+            'time_hotspots': self._analyze_time_hotspots(),
+            'collection_hotspots': self._analyze_collection_hotspots(),
+            'query_pattern_hotspots': self._analyze_query_pattern_hotspots(),
+            'peak_periods': self._identify_peak_periods(),
+            'workload_distribution': self._analyze_workload_distribution()
+        }
+        return analysis
+    
+    def _analyze_time_hotspots(self):
+        """Analyze hotspots by time periods"""
+        hourly_distribution = {}
+        
+        for query in self.slow_queries:
+            timestamp = query.get('timestamp', '')
+            if timestamp and len(timestamp) >= 19:  # YYYY-MM-DDTHH:MM:SS format
+                try:
+                    hour = int(timestamp[11:13])
+                    
+                    if hour not in hourly_distribution:
+                        hourly_distribution[hour] = {
+                            'query_count': 0,
+                            'total_duration': 0,
+                            'avg_duration': 0,
+                            'max_duration': 0
+                        }
+                    
+                    hourly_distribution[hour]['query_count'] += 1
+                    duration = query.get('duration_ms', 0)
+                    hourly_distribution[hour]['total_duration'] += duration
+                    hourly_distribution[hour]['max_duration'] = max(
+                        hourly_distribution[hour]['max_duration'], duration
+                    )
+                except (ValueError, IndexError):
+                    continue
+        
+        # Calculate averages and identify hotspots
+        for hour_data in hourly_distribution.values():
+            if hour_data['query_count'] > 0:
+                hour_data['avg_duration'] = hour_data['total_duration'] / hour_data['query_count']
+        
+        return hourly_distribution
+    
+    def _analyze_collection_hotspots(self):
+        """Analyze hotspots by collection"""
+        collection_stats = {}
+        
+        for query in self.slow_queries:
+            collection = query.get('namespace', '').split('.')[-1]
+            
+            if collection not in collection_stats:
+                collection_stats[collection] = {
+                    'query_count': 0,
+                    'total_duration': 0,
+                    'avg_duration': 0,
+                    'max_duration': 0,
+                    'total_docs_examined': 0,
+                    'avg_docs_examined': 0,
+                    'collscan_count': 0
+                }
+            
+            stats = collection_stats[collection]
+            stats['query_count'] += 1
+            duration = query.get('duration_ms', 0)
+            stats['total_duration'] += duration
+            stats['max_duration'] = max(stats['max_duration'], duration)
+            stats['total_docs_examined'] += query.get('docs_examined', 0)
+            
+            if query.get('plan_summary', '').upper() == 'COLLSCAN':
+                stats['collscan_count'] += 1
+        
+        # Calculate averages
+        for collection, stats in collection_stats.items():
+            if stats['query_count'] > 0:
+                stats['avg_duration'] = stats['total_duration'] / stats['query_count']
+                stats['avg_docs_examined'] = stats['total_docs_examined'] / stats['query_count']
+        
+        return collection_stats
+    
+    def _analyze_query_pattern_hotspots(self):
+        """Analyze hotspots by query patterns"""
+        pattern_stats = {}
+        
+        for query in self.slow_queries:
+            # Generate pattern key
+            command_info = query.get('command_info', {})
+            pattern_key = "unknown"
+            
+            if isinstance(command_info, dict):
+                if 'filter' in command_info:
+                    filter_fields = list(command_info['filter'].keys()) if command_info['filter'] else []
+                    pattern_key = f"filter_{'+'.join(sorted(filter_fields))}"
+                elif 'aggregate' in command_info:
+                    pattern_key = "aggregation"
+                elif 'find' in command_info:
+                    pattern_key = "find_query"
+            
+            if pattern_key not in pattern_stats:
+                pattern_stats[pattern_key] = {
+                    'query_count': 0,
+                    'total_duration': 0,
+                    'avg_duration': 0,
+                    'collections_affected': set(),
+                    'plan_summaries': {}
+                }
+            
+            stats = pattern_stats[pattern_key]
+            stats['query_count'] += 1
+            stats['total_duration'] += query.get('duration_ms', 0)
+            stats['collections_affected'].add(query.get('namespace', '').split('.')[-1])
+            
+            plan_summary = query.get('plan_summary', 'unknown')
+            stats['plan_summaries'][plan_summary] = stats['plan_summaries'].get(plan_summary, 0) + 1
+        
+        # Convert sets to lists for JSON serialization and calculate averages
+        for pattern, stats in pattern_stats.items():
+            stats['collections_affected'] = list(stats['collections_affected'])
+            if stats['query_count'] > 0:
+                stats['avg_duration'] = stats['total_duration'] / stats['query_count']
+        
+        return pattern_stats
+    
+    def _identify_peak_periods(self):
+        """Identify peak load periods"""
+        # Group queries by hour
+        hourly_load = {}
+        
+        for query in self.slow_queries:
+            timestamp = query.get('timestamp', '')
+            if timestamp and len(timestamp) >= 13:
+                hour_key = timestamp[:13]  # YYYY-MM-DDTHH
+                
+                if hour_key not in hourly_load:
+                    hourly_load[hour_key] = {
+                        'query_count': 0,
+                        'total_duration': 0,
+                        'severity_score': 0
+                    }
+                
+                hourly_load[hour_key]['query_count'] += 1
+                duration = query.get('duration_ms', 0)
+                hourly_load[hour_key]['total_duration'] += duration
+                
+                # Calculate severity score based on duration and docs examined
+                docs_examined = query.get('docs_examined', 0)
+                severity = (duration / 1000) + (docs_examined / 10000)  # Weighted severity
+                hourly_load[hour_key]['severity_score'] += severity
+        
+        # Identify top peak periods
+        peak_periods = []
+        for period, data in hourly_load.items():
+            if data['query_count'] >= 5:  # Minimum queries for peak consideration
+                peak_periods.append({
+                    'period': period,
+                    'query_count': data['query_count'],
+                    'total_duration': data['total_duration'],
+                    'avg_duration': data['total_duration'] / data['query_count'],
+                    'severity_score': data['severity_score']
+                })
+        
+        return sorted(peak_periods, key=lambda x: x['severity_score'], reverse=True)[:10]
+    
+    def _analyze_workload_distribution(self):
+        """Analyze overall workload distribution"""
+        total_queries = len(self.slow_queries)
+        total_duration = sum(q.get('duration_ms', 0) for q in self.slow_queries)
+        
+        # Distribution by operation type
+        operation_types = {}
+        plan_summaries = {}
+        duration_buckets = {
+            '0-1s': 0, '1-5s': 0, '5-10s': 0, '10-30s': 0, '30s+': 0
+        }
+        
+        for query in self.slow_queries:
+            # Operation type distribution
+            command_info = query.get('command_info', {})
+            op_type = 'unknown'
+            if isinstance(command_info, dict):
+                if 'find' in command_info:
+                    op_type = 'find'
+                elif 'aggregate' in command_info:
+                    op_type = 'aggregate'
+                elif 'update' in command_info:
+                    op_type = 'update'
+                elif 'delete' in command_info:
+                    op_type = 'delete'
+            
+            operation_types[op_type] = operation_types.get(op_type, 0) + 1
+            
+            # Plan summary distribution
+            plan = query.get('plan_summary', 'unknown')
+            plan_summaries[plan] = plan_summaries.get(plan, 0) + 1
+            
+            # Duration bucket distribution
+            duration = query.get('duration_ms', 0) / 1000  # Convert to seconds
+            if duration < 1:
+                duration_buckets['0-1s'] += 1
+            elif duration < 5:
+                duration_buckets['1-5s'] += 1
+            elif duration < 10:
+                duration_buckets['5-10s'] += 1
+            elif duration < 30:
+                duration_buckets['10-30s'] += 1
+            else:
+                duration_buckets['30s+'] += 1
+        
+        return {
+            'total_queries': total_queries,
+            'total_duration_ms': total_duration,
+            'avg_duration_ms': total_duration / total_queries if total_queries > 0 else 0,
+            'operation_type_distribution': operation_types,
+            'plan_summary_distribution': plan_summaries,
+            'duration_distribution': duration_buckets
+        }
+
+
+@app.route('/enhanced-index-recommendations')
+def enhanced_index_recommendations():
+    """Enhanced index recommendations with advanced analysis"""
+    if not parser.slow_queries:
+        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
+        return redirect('/')
+    
+    try:
+        # Create enhanced analyzer instance
+        analyzer = EnhancedIndexAnalyzer(parser.slow_queries)
+        
+        # Get enhanced recommendations
+        enhanced_recommendations = analyzer.analyze_queries_advanced()
+        
+        # Calculate summary statistics
+        total_queries = len(parser.slow_queries)
+        total_patterns = len(set([rec.get('pattern_hash', '') for rec in enhanced_recommendations]))
+        critical_recommendations = sum(1 for rec in enhanced_recommendations if rec.get('urgency') == 'critical')
+        high_impact_recommendations = sum(1 for rec in enhanced_recommendations if rec.get('performance_impact') == 'high')
+        
+        summary_stats = {
+            'total_queries_analyzed': total_queries,
+            'unique_patterns_found': total_patterns,
+            'total_recommendations': len(enhanced_recommendations),
+            'critical_recommendations': critical_recommendations,
+            'high_impact_recommendations': high_impact_recommendations,
+            'potential_performance_gain': sum(rec.get('estimated_improvement', 0) for rec in enhanced_recommendations)
+        }
+        
+        return render_template('enhanced_index_recommendations.html', 
+                             recommendations=enhanced_recommendations,
+                             summary_stats=summary_stats)
+    
+    except Exception as e:
+        flash(f'Error generating enhanced recommendations: {str(e)}', 'error')
+        return redirect('/')
+
+
+@app.route('/trend-analysis')
+def trend_analysis():
+    """Performance trend analysis for unique queries"""
+    if not parser.slow_queries:
+        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
+        return redirect('/')
+    
+    try:
+        analyzer = TrendAnalyzer(parser.slow_queries)
+        trends = analyzer.get_trend_analysis()
+        
+        # Calculate summary statistics
+        total_unique_queries = len(trends)
+        degrading_trends = sum(1 for t in trends if t['duration_trend'] == 'degrading')
+        improving_trends = sum(1 for t in trends if t['duration_trend'] == 'improving')
+        critical_performance = sum(1 for t in trends if t['performance_status'] == 'critical')
+        
+        summary_stats = {
+            'total_unique_queries': total_unique_queries,
+            'degrading_trends': degrading_trends,
+            'improving_trends': improving_trends,
+            'stable_trends': total_unique_queries - degrading_trends - improving_trends,
+            'critical_performance_queries': critical_performance,
+            'total_executions': sum(t['total_executions'] for t in trends)
+        }
+        
+        return render_template('trend_analysis.html', 
+                             trends=trends, 
+                             summary_stats=summary_stats)
+    
+    except Exception as e:
+        flash(f'Error generating trend analysis: {str(e)}', 'error')
+        return redirect('/')
+
+
+@app.route('/resource-impact')
+def resource_impact():
+    """Resource impact metrics analysis"""
+    if not parser.slow_queries:
+        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
+        return redirect('/')
+    
+    try:
+        analyzer = ResourceImpactAnalyzer(parser.slow_queries)
+        analysis = analyzer.get_resource_analysis()
+        
+        # Calculate summary statistics
+        summary_stats = {
+            'total_queries_analyzed': len(parser.slow_queries),
+            'memory_intensive_count': len(analysis['memory_intensive_queries']),
+            'io_intensive_count': len(analysis['io_intensive_queries']),
+            'cpu_intensive_count': len(analysis['cpu_intensive_queries']),
+            'collections_analyzed': len(analysis['collection_resource_usage']),
+            'peak_resource_periods': len([h for h in analysis['resource_trends'].values() if h.get('total_queries', 0) > 10])
+        }
+        
+        return render_template('resource_impact.html', 
+                             analysis=analysis, 
+                             summary_stats=summary_stats)
+    
+    except Exception as e:
+        flash(f'Error generating resource impact analysis: {str(e)}', 'error')
+        return redirect('/')
+
+
+@app.route('/workload-hotspots')
+def workload_hotspots():
+    """Workload hotspot detection and peak time analysis"""
+    if not parser.slow_queries:
+        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
+        return redirect('/')
+    
+    try:
+        analyzer = WorkloadHotspotAnalyzer(parser.slow_queries)
+        analysis = analyzer.get_hotspot_analysis()
+        
+        # Calculate summary statistics
+        peak_hours = len([h for h in analysis['time_hotspots'].values() if h.get('query_count', 0) > 5])
+        hotspot_collections = len([c for c in analysis['collection_hotspots'].values() if c.get('query_count', 0) > 10])
+        
+        summary_stats = {
+            'total_queries_analyzed': len(parser.slow_queries),
+            'peak_time_periods': len(analysis['peak_periods']),
+            'peak_hours_identified': peak_hours,
+            'hotspot_collections': hotspot_collections,
+            'query_patterns_found': len(analysis['query_pattern_hotspots']),
+            'avg_queries_per_hour': analysis['workload_distribution']['total_queries'] / max(peak_hours, 1)
+        }
+        
+        return render_template('workload_hotspots.html', 
+                             analysis=analysis, 
+                             summary_stats=summary_stats)
+    
+    except Exception as e:
+        flash(f'Error generating workload hotspot analysis: {str(e)}', 'error')
+        return redirect('/')
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='127.0.0.1', port=5000)  # Listen only on localhost
