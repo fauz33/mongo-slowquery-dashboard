@@ -3133,13 +3133,17 @@ def _generate_current_op_recommendations(analysis):
 class EnhancedIndexAnalyzer:
     """Advanced index recommendation engine with intelligent query parsing and performance impact analysis"""
     
-    def __init__(self, mongo_analyzer):
-        self.mongo_analyzer = mongo_analyzer
+    def __init__(self, slow_queries):
+        # Handle both mongo_analyzer objects and direct slow_queries lists
+        if hasattr(slow_queries, 'slow_queries'):
+            self.slow_queries = slow_queries.slow_queries
+        else:
+            self.slow_queries = slow_queries
         self.recommendations = []
         
     def analyze_queries_advanced(self):
         """Main entry point for enhanced index analysis"""
-        if not self.mongo_analyzer.slow_queries:
+        if not self.slow_queries:
             return []
             
         # Group queries by pattern for comprehensive analysis
@@ -3161,7 +3165,7 @@ class EnhancedIndexAnalyzer:
         """Group queries by enhanced patterns considering structure and performance"""
         patterns = {}
         
-        for query in self.mongo_analyzer.slow_queries:
+        for query in self.slow_queries:
             # Create enhanced pattern key
             pattern_key = self._create_enhanced_pattern_key(query)
             
@@ -4171,19 +4175,19 @@ class WorkloadHotspotAnalyzer:
 @app.route('/enhanced-index-recommendations')
 def enhanced_index_recommendations():
     """Enhanced index recommendations with advanced analysis"""
-    if not parser.slow_queries:
+    if not analyzer.slow_queries:
         flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
         return redirect('/')
     
     try:
         # Create enhanced analyzer instance
-        analyzer = EnhancedIndexAnalyzer(parser.slow_queries)
+        enhanced_analyzer = EnhancedIndexAnalyzer(analyzer.slow_queries)
         
         # Get enhanced recommendations
-        enhanced_recommendations = analyzer.analyze_queries_advanced()
+        enhanced_recommendations = enhanced_analyzer.analyze_queries_advanced()
         
         # Calculate summary statistics
-        total_queries = len(parser.slow_queries)
+        total_queries = len(analyzer.slow_queries)
         total_patterns = len(set([rec.get('pattern_hash', '') for rec in enhanced_recommendations]))
         critical_recommendations = sum(1 for rec in enhanced_recommendations if rec.get('urgency') == 'critical')
         high_impact_recommendations = sum(1 for rec in enhanced_recommendations if rec.get('performance_impact') == 'high')
@@ -4209,13 +4213,13 @@ def enhanced_index_recommendations():
 @app.route('/trend-analysis')
 def trend_analysis():
     """Performance trend analysis for unique queries"""
-    if not parser.slow_queries:
+    if not analyzer.slow_queries:
         flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
         return redirect('/')
     
     try:
-        analyzer = TrendAnalyzer(parser.slow_queries)
-        trends = analyzer.get_trend_analysis()
+        trend_analyzer = TrendAnalyzer(analyzer.slow_queries)
+        trends = trend_analyzer.get_trend_analysis()
         
         # Calculate summary statistics
         total_unique_queries = len(trends)
@@ -4244,17 +4248,17 @@ def trend_analysis():
 @app.route('/resource-impact')
 def resource_impact():
     """Resource impact metrics analysis"""
-    if not parser.slow_queries:
+    if not analyzer.slow_queries:
         flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
         return redirect('/')
     
     try:
-        analyzer = ResourceImpactAnalyzer(parser.slow_queries)
-        analysis = analyzer.get_resource_analysis()
+        resource_analyzer = ResourceImpactAnalyzer(analyzer.slow_queries)
+        analysis = resource_analyzer.get_resource_analysis()
         
         # Calculate summary statistics
         summary_stats = {
-            'total_queries_analyzed': len(parser.slow_queries),
+            'total_queries_analyzed': len(analyzer.slow_queries),
             'memory_intensive_count': len(analysis['memory_intensive_queries']),
             'io_intensive_count': len(analysis['io_intensive_queries']),
             'cpu_intensive_count': len(analysis['cpu_intensive_queries']),
@@ -4274,20 +4278,20 @@ def resource_impact():
 @app.route('/workload-hotspots')
 def workload_hotspots():
     """Workload hotspot detection and peak time analysis"""
-    if not parser.slow_queries:
+    if not analyzer.slow_queries:
         flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
         return redirect('/')
     
     try:
-        analyzer = WorkloadHotspotAnalyzer(parser.slow_queries)
-        analysis = analyzer.get_hotspot_analysis()
+        workload_analyzer = WorkloadHotspotAnalyzer(analyzer.slow_queries)
+        analysis = workload_analyzer.get_hotspot_analysis()
         
         # Calculate summary statistics
         peak_hours = len([h for h in analysis['time_hotspots'].values() if h.get('query_count', 0) > 5])
         hotspot_collections = len([c for c in analysis['collection_hotspots'].values() if c.get('query_count', 0) > 10])
         
         summary_stats = {
-            'total_queries_analyzed': len(parser.slow_queries),
+            'total_queries_analyzed': len(analyzer.slow_queries),
             'peak_time_periods': len(analysis['peak_periods']),
             'peak_hours_identified': peak_hours,
             'hotspot_collections': hotspot_collections,
