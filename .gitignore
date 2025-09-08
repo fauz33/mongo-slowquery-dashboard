@@ -9,6 +9,7 @@ __pycache__/
 *.log
 *mongodb*
 mongodb*
+test*
 
 # Distribution / packaging
 .Python

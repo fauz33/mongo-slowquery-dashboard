@@ -3148,6 +3148,8 @@ class EnhancedIndexAnalyzer:
     """Advanced index recommendation engine with intelligent query parsing and performance impact analysis"""
     
     def __init__(self, slow_queries):
+        # Helper function to safely convert values to integers
+        self._safe_int = lambda x: int(x) if isinstance(x, (int, float)) or (isinstance(x, str) and x.isdigit()) else 0
         # Handle both mongo_analyzer objects and direct slow_queries lists
         if hasattr(slow_queries, 'slow_queries'):
             self.slow_queries = slow_queries.slow_queries
@@ -3199,9 +3201,9 @@ class EnhancedIndexAnalyzer:
             pattern = patterns[pattern_key]
             pattern['queries'].append(query)
             pattern['total_executions'] += 1
-            pattern['total_duration'] += query.get('duration', 0)
-            pattern['total_docs_examined'] += query.get('docsExamined', 0)
-            pattern['total_returned'] += query.get('nReturned', 0)
+            pattern['total_duration'] += self._safe_int(query.get('duration', 0))
+            pattern['total_docs_examined'] += self._safe_int(query.get('docsExamined', 0))
+            pattern['total_returned'] += self._safe_int(query.get('nReturned', 0))
         
         return patterns
     
@@ -3574,8 +3576,9 @@ class TrendAnalyzer:
             if pattern_key not in self.unique_queries:
                 self.unique_queries[pattern_key] = {
                     'pattern': pattern_key,
-                    'collection': query.get('namespace', '').split('.')[-1],
-                    'database': query.get('namespace', '').split('.')[0],
+                    'collection': (query.get('namespace') or query.get('collection', 'unknown')),
+                    'database': (query.get('database') or 
+                                (query.get('namespace', '').split('.')[0] if query.get('namespace') and '.' in query.get('namespace', '') else 'unknown')),
                     'query_structure': self._extract_query_structure(query),
                     'executions': []
                 }
@@ -3593,7 +3596,11 @@ class TrendAnalyzer:
     
     def _generate_query_pattern(self, query):
         """Generate a unique pattern key for the query"""
-        collection = query.get('namespace', '').split('.')[-1]
+        namespace = query.get('namespace', '')
+        if namespace and '.' in namespace:
+            collection = namespace.split('.')[-1]
+        else:
+            collection = query.get('collection', 'unknown')
         command_info = query.get('command_info', {})
         
         if isinstance(command_info, dict):
@@ -3645,7 +3652,16 @@ class TrendAnalyzer:
                 continue  # Need at least 2 executions for trend
             
             # Sort executions by timestamp
-            executions = sorted(pattern_data['executions'], key=lambda x: x['timestamp'] or '')
+            def sort_key(x):
+                timestamp = x.get('timestamp')
+                if timestamp is None:
+                    return datetime.min
+                elif hasattr(timestamp, 'strftime'):
+                    return timestamp
+                else:
+                    return str(timestamp)
+            
+            executions = sorted(pattern_data['executions'], key=sort_key)
             
             # Calculate trend metrics
             durations = [e['duration'] for e in executions]
@@ -3935,7 +3951,11 @@ class ResourceImpactAnalyzer:
         collection_stats = {}
         
         for query in self.slow_queries:
-            collection = query.get('namespace', '').split('.')[-1]
+            namespace = query.get('namespace', '')
+        if namespace and '.' in namespace:
+            collection = namespace.split('.')[-1]
+        else:
+            collection = query.get('collection', 'unknown')
             
             if collection not in collection_stats:
                 collection_stats[collection] = {
@@ -4030,7 +4050,11 @@ class WorkloadHotspotAnalyzer:
         collection_stats = {}
         
         for query in self.slow_queries:
-            collection = query.get('namespace', '').split('.')[-1]
+            namespace = query.get('namespace', '')
+        if namespace and '.' in namespace:
+            collection = namespace.split('.')[-1]
+        else:
+            collection = query.get('collection', 'unknown')
             
             if collection not in collection_stats:
                 collection_stats[collection] = {
@@ -4091,7 +4115,12 @@ class WorkloadHotspotAnalyzer:
             stats = pattern_stats[pattern_key]
             stats['query_count'] += 1
             stats['total_duration'] += query.get('duration_ms', 0)
-            stats['collections_affected'].add(query.get('namespace', '').split('.')[-1])
+            namespace = query.get('namespace', '')
+            if namespace and '.' in namespace:
+                collection_name = namespace.split('.')[-1]
+            else:
+                collection_name = query.get('collection', 'unknown')
+            stats['collections_affected'].add(collection_name)
             
             plan_summary = query.get('plan_summary', 'unknown')
             stats['plan_summaries'][plan_summary] = stats['plan_summaries'].get(plan_summary, 0) + 1
