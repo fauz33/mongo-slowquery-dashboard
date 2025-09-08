@@ -517,18 +517,25 @@ class MongoLogAnalyzer:
                         'username': None,  # Will be filled by correlation
                         'file_path': filepath,
                         'line_number': line_num,
-                        # Extract performance metrics if available
+                        # Extract performance metrics with proper None checking
                         'docsExamined': (
-                            attr.get('docsExamined') or 
-                            attr.get('command', {}).get('docsExamined') or 0
+                            attr.get('docsExamined') if attr.get('docsExamined') is not None else
+                            attr.get('docs_examined') if attr.get('docs_examined') is not None else
+                            attr.get('totalDocsExamined') if attr.get('totalDocsExamined') is not None else
+                            attr.get('command', {}).get('docsExamined') if attr.get('command', {}).get('docsExamined') is not None else 0
                         ),
                         'keysExamined': (
-                            attr.get('keysExamined') or 
-                            attr.get('command', {}).get('keysExamined') or 0
+                            attr.get('keysExamined') if attr.get('keysExamined') is not None else
+                            attr.get('keys_examined') if attr.get('keys_examined') is not None else
+                            attr.get('totalKeysExamined') if attr.get('totalKeysExamined') is not None else
+                            attr.get('command', {}).get('keysExamined') if attr.get('command', {}).get('keysExamined') is not None else 0
                         ),
                         'nReturned': (
-                            attr.get('nReturned') or 
-                            attr.get('command', {}).get('nReturned') or 0
+                            attr.get('nReturned') if attr.get('nReturned') is not None else
+                            attr.get('n_returned') if attr.get('n_returned') is not None else
+                            attr.get('nreturned') if attr.get('nreturned') is not None else
+                            attr.get('numReturned') if attr.get('numReturned') is not None else
+                            attr.get('command', {}).get('nReturned') if attr.get('command', {}).get('nReturned') is not None else 0
                         ),
                         'planCacheKey': attr.get('planCacheKey', '')
                     })
@@ -610,18 +617,25 @@ class MongoLogAnalyzer:
                             'username': None,  # Will be filled by correlation
                             'file_path': filepath,
                             'line_number': line_num,
-                            # Extract performance metrics if available
+                            # Extract performance metrics with proper None checking
                             'docsExamined': (
-                                attr.get('docsExamined') or 
-                                attr.get('command', {}).get('docsExamined') or 0
+                                attr.get('docsExamined') if attr.get('docsExamined') is not None else
+                                attr.get('docs_examined') if attr.get('docs_examined') is not None else
+                                attr.get('totalDocsExamined') if attr.get('totalDocsExamined') is not None else
+                                attr.get('command', {}).get('docsExamined') if attr.get('command', {}).get('docsExamined') is not None else 0
                             ),
                             'keysExamined': (
-                                attr.get('keysExamined') or 
-                                attr.get('command', {}).get('keysExamined') or 0
+                                attr.get('keysExamined') if attr.get('keysExamined') is not None else
+                                attr.get('keys_examined') if attr.get('keys_examined') is not None else
+                                attr.get('totalKeysExamined') if attr.get('totalKeysExamined') is not None else
+                                attr.get('command', {}).get('keysExamined') if attr.get('command', {}).get('keysExamined') is not None else 0
                             ),
                             'nReturned': (
-                                attr.get('nReturned') or 
-                                attr.get('command', {}).get('nReturned') or 0
+                                attr.get('nReturned') if attr.get('nReturned') is not None else
+                                attr.get('n_returned') if attr.get('n_returned') is not None else
+                                attr.get('nreturned') if attr.get('nreturned') is not None else
+                                attr.get('numReturned') if attr.get('numReturned') is not None else
+                                attr.get('command', {}).get('nReturned') if attr.get('command', {}).get('nReturned') is not None else 0
                             ),
                             'planCacheKey': attr.get('planCacheKey', '')
                         })
@@ -1542,7 +1556,7 @@ class MongoLogAnalyzer:
             
             # Update slowest query if this execution is slower, or if same duration but more recent
             current_duration = query.get('duration', 0)
-            current_max_duration = max([exec['duration'] for exec in pattern['executions']])
+            current_max_duration = max([execution['duration'] for execution in pattern['executions']])
             
             if (pattern['slowest_query_full'] == '' or 
                 current_duration >= current_max_duration):
@@ -1560,10 +1574,10 @@ class MongoLogAnalyzer:
             if pattern['total_count'] == 0:
                 continue
                 
-            durations = [exec['duration'] for exec in pattern['executions']]
-            docs_examined = [exec['docs_examined'] for exec in pattern['executions']]
-            keys_examined = [exec['keys_examined'] for exec in pattern['executions']]
-            returned = [exec['returned'] for exec in pattern['executions']]
+            durations = [execution['duration'] for execution in pattern['executions']]
+            docs_examined = [execution['docs_examined'] for execution in pattern['executions']]
+            keys_examined = [execution['keys_examined'] for execution in pattern['executions']]
+            returned = [execution['returned'] for execution in pattern['executions']]
             
             # Duration statistics
             pattern['avg_duration'] = statistics.mean(durations)
@@ -3886,8 +3900,14 @@ class ResourceImpactAnalyzer:
         for query in self.slow_queries:
             timestamp = query.get('timestamp', '')
             if timestamp:
+                # Convert datetime to string if needed
+                if hasattr(timestamp, 'strftime'):
+                    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
+                else:
+                    timestamp_str = str(timestamp)
+                
                 # Extract hour from timestamp (simplified)
-                hour = timestamp[:13] if len(timestamp) > 13 else timestamp
+                hour = timestamp_str[:13] if len(timestamp_str) > 13 else timestamp_str
                 
                 if hour not in hourly_stats:
                     hourly_stats[hour] = {
@@ -3970,26 +3990,33 @@ class WorkloadHotspotAnalyzer:
         
         for query in self.slow_queries:
             timestamp = query.get('timestamp', '')
-            if timestamp and len(timestamp) >= 19:  # YYYY-MM-DDTHH:MM:SS format
-                try:
-                    hour = int(timestamp[11:13])
-                    
-                    if hour not in hourly_distribution:
-                        hourly_distribution[hour] = {
-                            'query_count': 0,
-                            'total_duration': 0,
-                            'avg_duration': 0,
-                            'max_duration': 0
-                        }
-                    
-                    hourly_distribution[hour]['query_count'] += 1
-                    duration = query.get('duration_ms', 0)
-                    hourly_distribution[hour]['total_duration'] += duration
-                    hourly_distribution[hour]['max_duration'] = max(
-                        hourly_distribution[hour]['max_duration'], duration
-                    )
-                except (ValueError, IndexError):
-                    continue
+            if timestamp:
+                # Convert datetime to string if needed
+                if hasattr(timestamp, 'strftime'):
+                    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
+                else:
+                    timestamp_str = str(timestamp)
+                
+                if len(timestamp_str) >= 19:  # YYYY-MM-DDTHH:MM:SS format
+                    try:
+                        hour = int(timestamp_str[11:13])
+                        
+                        if hour not in hourly_distribution:
+                            hourly_distribution[hour] = {
+                                'query_count': 0,
+                                'total_duration': 0,
+                                'avg_duration': 0,
+                                'max_duration': 0
+                            }
+                        
+                        hourly_distribution[hour]['query_count'] += 1
+                        duration = query.get('duration_ms', 0)
+                        hourly_distribution[hour]['total_duration'] += duration
+                        hourly_distribution[hour]['max_duration'] = max(
+                            hourly_distribution[hour]['max_duration'], duration
+                        )
+                    except (ValueError, IndexError):
+                        continue
         
         # Calculate averages and identify hotspots
         for hour_data in hourly_distribution.values():
@@ -4084,8 +4111,15 @@ class WorkloadHotspotAnalyzer:
         
         for query in self.slow_queries:
             timestamp = query.get('timestamp', '')
-            if timestamp and len(timestamp) >= 13:
-                hour_key = timestamp[:13]  # YYYY-MM-DDTHH
+            if timestamp:
+                # Convert datetime to string if needed
+                if hasattr(timestamp, 'strftime'):
+                    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
+                else:
+                    timestamp_str = str(timestamp)
+                
+                if len(timestamp_str) >= 13:
+                    hour_key = timestamp_str[:13]  # YYYY-MM-DDTHH
                 
                 if hour_key not in hourly_load:
                     hourly_load[hour_key] = {
