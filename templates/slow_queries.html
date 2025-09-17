@@ -50,7 +50,67 @@
                             Showing grouped query patterns
                         {% endif %}
                     </small>
+                    
+                    <!-- Grouping options - only visible when unique queries mode is selected -->
+                    <div class="ms-4 grouping-options" {% if view_mode != 'unique_queries' %}style="display: none;"{% endif %}>
+                        <span class="me-2 fw-bold text-info"><i class="fas fa-object-group me-1"></i>Group By:</span>
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="groupingType" id="patternKey" value="pattern_key" 
+                                   {% if grouping_type == 'pattern_key' %}checked{% endif %}>
+                            <label class="btn btn-outline-info btn-sm" for="patternKey">
+                                <i class="fas fa-fingerprint me-1"></i>Pattern
+                            </label>
+                            
+                            <input type="radio" class="btn-check" name="groupingType" id="namespace" value="namespace" 
+                                   {% if grouping_type == 'namespace' %}checked{% endif %}>
+                            <label class="btn btn-outline-info btn-sm" for="namespace">
+                                <i class="fas fa-database me-1"></i>Namespace
+                            </label>
+                            
+                            <input type="radio" class="btn-check" name="groupingType" id="queryHash" value="query_hash" 
+                                   {% if grouping_type == 'query_hash' %}checked{% endif %}>
+                            <label class="btn btn-outline-info btn-sm" for="queryHash">
+                                <i class="fas fa-hashtag me-1"></i>Query Hash
+                            </label>
+                        </div>
+                        <small class="text-muted ms-2">
+                            {% if grouping_type == 'pattern_key' %}
+                                Groups by query + namespace + execution plan
+                            {% elif grouping_type == 'namespace' %}
+                                Groups by database.collection only
+                            {% else %}
+                                Groups by query structure only
+                            {% endif %}
+                        </small>
+                    </div>
                 </div>
+                
+                <!-- Grouping explanation - only visible when unique queries mode is selected -->
+                {% if view_mode == 'unique_queries' %}
+                <div class="mt-2">
+                    <div class="collapse" id="groupingHelp">
+                        <div class="card card-body bg-light border-info" style="font-size: 0.85rem;">
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <strong><i class="fas fa-fingerprint text-primary me-1"></i>Pattern Grouping:</strong>
+                                    <div class="text-muted">Most granular - groups queries by exact pattern including execution plan. Best for identifying specific performance issues.</div>
+                                </div>
+                                <div class="col-md-4">
+                                    <strong><i class="fas fa-database text-success me-1"></i>Namespace Grouping:</strong>
+                                    <div class="text-muted">Groups by collection only. Useful for analyzing performance by collection regardless of query type.</div>
+                                </div>
+                                <div class="col-md-4">
+                                    <strong><i class="fas fa-hashtag text-warning me-1"></i>Query Hash Grouping:</strong>
+                                    <div class="text-muted">Groups by query structure only. Identifies query patterns that appear across multiple collections/plans.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="btn btn-link btn-sm p-0 text-info" type="button" data-bs-toggle="collapse" data-bs-target="#groupingHelp" aria-expanded="false">
+                        <i class="fas fa-question-circle me-1"></i>What's the difference between grouping modes?
+                    </button>
+                </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -131,6 +191,10 @@
                             </button>
                         </div>
                         {% endif %}
+                        <!-- Hidden inputs to preserve view mode and grouping -->
+                        <input type="hidden" name="view_mode" value="{{ view_mode }}">
+                        <input type="hidden" name="grouping" value="{{ grouping_type }}">
+                        
                         <div class="d-flex align-items-end">
                             <button type="submit" class="btn btn-primary me-2">
                                 <i class="fas fa-filter me-2"></i>Apply Filters
@@ -253,55 +317,44 @@
                         <table class="table table-bordered table-hover table-nowrap">
                             <thead class="table-primary">
                                 <tr>
-                                    <th style="min-width: 80px; color: #000; font-weight: bold;">#</th>
                                     {% if view_mode == 'unique_queries' %}
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Avg Duration</th>
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
-                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Hash</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Namespace</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Hash</th>
                                         <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
                                         <th style="min-width: 100px; color: #000; font-weight: bold;">Executions</th>
-                                        <th style="min-width: 140px; color: #000; font-weight: bold;">Duration Range</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Avg Duration</th>
+                                        <th style="min-width: 140px; color: #000; font-weight: bold;">Min-Max Duration</th>
                                         <th style="min-width: 140px; color: #000; font-weight: bold;">Last Seen</th>
-                                        <th style="min-width: 300px; color: #000; font-weight: bold;">Sample Query</th>
+                                        <th style="min-width: 300px; color: #000; font-weight: bold;">Query Text</th>
                                     {% else %}
-                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Duration</th>
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Database</th>
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Collection</th>
-                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Hash</th>
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
-                                        <th style="min-width: 100px; color: #000; font-weight: bold;">User</th>
-                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Connection</th>
-                                        <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
-                                        <th style="min-width: 400px; color: #000; font-weight: bold;">Query</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold; text-align: center;">Namespace</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold; text-align: center;">Connection ID</th>
+                                        <th style="min-width: 180px; color: #000; font-weight: bold; text-align: center;">Hash</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold; text-align: center;">Plan Summary</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold; text-align: center;">Duration</th>
+                                        <th style="min-width: 100px; color: #000; font-weight: bold; text-align: center;">Docs Examined</th>
+                                        <th style="min-width: 140px; color: #000; font-weight: bold; text-align: center;">Timestamp</th>
+                                        <th style="min-width: 400px; color: #000; font-weight: bold; text-align: center;">Query Text</th>
                                     {% endif %}
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for query in queries %}
                                 <tr>
-                                    <td class="text-center">{{ loop.index }}</td>
                                     {% if view_mode == 'unique_queries' %}
-                                        <td class="text-center">
-                                            {% if query.avg_duration >= 5000 %}
-                                                <span class="badge bg-danger fs-6">{{ query.avg_duration|round|int }}ms</span>
-                                            {% elif query.avg_duration >= 1000 %}
-                                                <span class="badge bg-warning fs-6">{{ query.avg_duration|round|int }}ms</span>
-                                            {% else %}
-                                                <span class="badge bg-info fs-6">{{ query.avg_duration|round|int }}ms</span>
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
-                                        </td>
-                                        <td>{{ query.collection or 'unknown' }}</td>
+                                        <!-- Namespace -->
+                                        <td>{{ query.namespace or (query.database + '.' + query.collection) if query.database and query.collection else 'unknown' }}</td>
+                                        
+                                        <!-- Hash (10 characters) -->
                                         <td class="text-center">
                                             {% if query.query_hash %}
-                                                <small class="text-muted font-monospace">{{ query.query_hash[:8] }}...</small>
+                                                <small class="text-muted font-monospace">{{ query.query_hash[:10] }}{% if query.query_hash|length > 10 %}...{% endif %}</small>
                                             {% else %}
                                                 <span class="badge bg-light text-muted">none</span>
                                             {% endif %}
                                         </td>
+                                        
+                                        <!-- Plan Summary -->
                                         <td class="text-center">
                                             {% set index_info = query.plan_summary|extract_index_info %}
                                             {% if index_info.scan_type == 'COLLSCAN' %}
@@ -318,50 +371,92 @@
                                                 <span class="badge bg-light text-dark">none</span>
                                             {% endif %}
                                         </td>
+                                        
+                                        <!-- Executions -->
                                         <td class="text-center">
-                                            <span class="badge bg-primary">{{ query.total_count }}×</span>
+                                            <span class="badge bg-primary">{{ query.execution_count if query.execution_count else query['execution_count'] }}×</span>
                                         </td>
+                                        
+                                        <!-- Avg Duration (moved after Executions) -->
                                         <td class="text-center">
-                                            <small class="text-muted">{{ query.duration_range }}</small>
+                                            {% set avg_duration_ms = query.avg_duration|round|int %}
+                                            {% if avg_duration_ms >= 3600000 %}
+                                                {% set hours = (avg_duration_ms / 3600000)|round(1) %}
+                                                <span class="badge bg-danger fs-6">{{ hours }}h</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ avg_duration_ms }}ms</small>
+                                            {% elif avg_duration_ms >= 60000 %}
+                                                {% set minutes = (avg_duration_ms / 60000)|round(1) %}
+                                                <span class="badge bg-danger fs-6">{{ minutes }}m</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ avg_duration_ms }}ms</small>
+                                            {% elif avg_duration_ms >= 5000 %}
+                                                {% set seconds = (avg_duration_ms / 1000)|round(1) %}
+                                                <span class="badge bg-danger fs-6">{{ seconds }}s</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ avg_duration_ms }}ms</small>
+                                            {% elif avg_duration_ms >= 1000 %}
+                                                {% set seconds = (avg_duration_ms / 1000)|round(1) %}
+                                                <span class="badge bg-warning fs-6">{{ seconds }}s</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ avg_duration_ms }}ms</small>
+                                            {% else %}
+                                                <span class="badge bg-info fs-6">{{ avg_duration_ms }}ms</span>
+                                            {% endif %}
                                         </td>
+                                        
+                                        <!-- Min-Max Duration (was Duration Range) -->
+                                        <td class="text-center">
+                                            {% set min_dur = query.min_duration if query.min_duration else query['min_duration'] %}
+                                            {% set max_dur = query.max_duration if query.max_duration else query['max_duration'] %}
+                                            {% if min_dur and max_dur %}
+                                                <small class="text-muted">{{ min_dur }}-{{ max_dur }}ms</small>
+                                            {% else %}
+                                                <small class="text-muted">N/A</small>
+                                            {% endif %}
+                                        </td>
+                                        
+                                        <!-- Last Seen -->
                                         <td>
-                                            <small>{{ query.last_seen.strftime('%Y-%m-%d %H:%M:%S') if query.last_seen else 'N/A' }}</small>
+                                            {% set last_seen = query.last_seen if query.last_seen else query['last_seen'] %}
+                                            <small>{{ last_seen.strftime('%Y-%m-%d %H:%M:%S') if last_seen else 'N/A' }}</small>
                                         </td>
+                                        
+                                        <!-- Query Text -->
                                         <td>
                                             <div class="query-text" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
-                                                 title="{{ query.sample_query }}">
-                                                {{ query.sample_query[:80] }}{% if query.sample_query|length > 80 %}...{% endif %}
+                                                 title="{{ query.sample_query if query.sample_query else (query.query_text if query.query_text else 'N/A') }}">
+                                                {% set display_text = query.sample_query if query.sample_query else query.query_text %}
+                                                {% if display_text %}{{ display_text[:80] }}{% if display_text|length > 80 %}...{% endif %}{% else %}N/A{% endif %}
                                             </div>
                                             <button class="btn btn-sm btn-outline-primary mt-1" 
                                                     data-bs-toggle="modal" 
                                                     data-bs-target="#queryModal"
                                                     data-query-number="{{ loop.index }}"
-                                                    data-query-text="{{ query.slowest_query_full|e }}"
-                                                    data-execution-count="{{ query.total_count }}">
+                                                    data-query-text="{{ (query.sample_query|e if query.sample_query else query.query_text|e) if (query.sample_query or query.query_text) else 'N/A' }}"
+                                                    data-execution-count="{{ query.execution_count if query.execution_count else query['execution_count'] }}">
                                                 <i class="fas fa-expand-alt me-1"></i>View Details
                                             </button>
                                         </td>
                                     {% else %}
+                                        <!-- Namespace -->
+                                        <td>{{ query.namespace or (query.database + '.' + query.collection) if query.database and query.collection else 'unknown' }}</td>
+                                        
+                                        <!-- Connection ID -->
                                         <td class="text-center">
-                                            {% if query.duration >= 5000 %}
-                                                <span class="badge bg-danger fs-6">{{ query.duration }}ms</span>
-                                            {% elif query.duration >= 1000 %}
-                                                <span class="badge bg-warning fs-6">{{ query.duration }}ms</span>
+                                            {% if query.connection_id %}
+                                                <code class="text-primary">{{ query.connection_id }}</code>
                                             {% else %}
-                                                <span class="badge bg-info fs-6">{{ query.duration }}ms</span>
+                                                <span class="badge bg-light text-muted">unknown</span>
                                             {% endif %}
                                         </td>
-                                        <td>
-                                            <span class="badge bg-info">{{ query.database or 'unknown' }}</span>
-                                        </td>
-                                        <td>{{ query.collection or 'unknown' }}</td>
+                                        
+                                        <!-- Hash (full value) -->
                                         <td class="text-center">
                                             {% if query.query_hash %}
-                                                <small class="text-muted font-monospace">{{ query.query_hash[:8] }}...</small>
+                                                <small class="text-muted font-monospace">{{ query.query_hash }}</small>
                                             {% else %}
                                                 <span class="badge bg-light text-muted">none</span>
                                             {% endif %}
                                         </td>
+                                        
+                                        <!-- Plan Summary -->
                                         <td class="text-center">
                                             {% set index_info = query.plan_summary|extract_index_info %}
                                             {% if index_info.scan_type == 'COLLSCAN' %}
@@ -375,32 +470,55 @@
                                             {% elif query.plan_summary and query.plan_summary != 'None' %}
                                                 <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ query.plan_summary }}</span>
                                             {% else %}
-                                                <span class="badge bg-light text-dark">none</span>
+                                                <span class="badge bg-light text-muted">none</span>
                                             {% endif %}
                                         </td>
+                                        
+                                        <!-- Duration (moved after Plan Summary) -->
                                         <td class="text-center">
-                                            {% if query.username and query.username != 'Unknown' %}
-                                                <span class="badge bg-success">{{ query.username }}</span>
+                                            {% set duration_ms = query.duration %}
+                                            {% if duration_ms >= 3600000 %}
+                                                {% set hours = (duration_ms / 3600000)|round(1) %}
+                                                <span class="badge bg-danger fs-6">{{ hours }}h</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ duration_ms }}ms</small>
+                                            {% elif duration_ms >= 60000 %}
+                                                {% set minutes = (duration_ms / 60000)|round(1) %}
+                                                <span class="badge bg-danger fs-6">{{ minutes }}m</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ duration_ms }}ms</small>
+                                            {% elif duration_ms >= 5000 %}
+                                                {% set seconds = (duration_ms / 1000)|round(1) %}
+                                                <span class="badge bg-danger fs-6">{{ seconds }}s</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ duration_ms }}ms</small>
+                                            {% elif duration_ms >= 1000 %}
+                                                {% set seconds = (duration_ms / 1000)|round(1) %}
+                                                <span class="badge bg-warning fs-6">{{ seconds }}s</span>
+                                                <br><small class="text-muted" style="font-size: 0.7em;">{{ duration_ms }}ms</small>
                                             {% else %}
-                                                <span class="badge bg-light text-muted">unknown</span>
+                                                <span class="badge bg-info fs-6">{{ duration_ms }}ms</span>
                                             {% endif %}
                                         </td>
+                                        
+                                        <!-- Docs Examined -->
                                         <td class="text-center">
-                                            <small class="text-muted">conn{{ query.connection_id }}</small>
+                                            <small class="text-muted">{{ query.docs_examined if query.docs_examined else 'N/A' }}</small>
                                         </td>
+                                        
+                                        <!-- Timestamp -->
                                         <td>
                                             <small>{{ query.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
                                         </td>
+                                        
+                                        <!-- Query Text -->
                                         <td>
                                             <div class="query-text" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
-                                                 title="{{ query.query }}">
-                                                {{ query.query[:100] }}{% if query.query|length > 100 %}...{% endif %}
+                                                 title="{{ query.query_text if query.query_text else 'N/A' }}">
+                                                {% if query.query_text %}{{ query.query_text[:100] }}{% if query.query_text|length > 100 %}...{% endif %}{% else %}N/A{% endif %}
                                             </div>
                                             <button class="btn btn-sm btn-outline-primary mt-1" 
                                                     data-bs-toggle="modal" 
                                                     data-bs-target="#queryModal"
                                                     data-query-number="{{ loop.index }}"
-                                                    data-query-text="{{ query.query|e }}">
+                                                    data-query-text="{{ query.query_text|e if query.query_text else 'N/A' }}">
                                                 <i class="fas fa-expand-alt me-1"></i>View Full
                                             </button>
                                         </td>
@@ -499,11 +617,36 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // View mode toggle functionality
     const viewModeRadios = document.querySelectorAll('input[name="viewMode"]');
+    const groupingOptions = document.querySelector('.grouping-options');
+    
     viewModeRadios.forEach(radio => {
         radio.addEventListener('change', function() {
             if (this.checked) {
                 const currentUrl = new URL(window.location.href);
                 currentUrl.searchParams.set('view_mode', this.value);
+                
+                // Show/hide grouping options based on view mode
+                if (groupingOptions) {
+                    if (this.value === 'unique_queries') {
+                        groupingOptions.style.display = 'block';
+                    } else {
+                        groupingOptions.style.display = 'none';
+                        currentUrl.searchParams.delete('grouping'); // Remove grouping when not in unique mode
+                    }
+                }
+                
+                window.location.href = currentUrl.toString();
+            }
+        });
+    });
+    
+    // Grouping type toggle functionality
+    const groupingRadios = document.querySelectorAll('input[name="groupingType"]');
+    groupingRadios.forEach(radio => {
+        radio.addEventListener('change', function() {
+            if (this.checked) {
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('grouping', this.value);
                 window.location.href = currentUrl.toString();
             }
         });

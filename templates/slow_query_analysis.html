@@ -252,6 +252,7 @@
                             <tr>
                                 <th style="color: #000; font-weight: bold;">Priority</th>
                                 <th style="color: #000; font-weight: bold;">Collection</th>
+                                <th style="color: #000; font-weight: bold;">Hash</th>
                                 <th style="color: #000; font-weight: bold;">Type</th>
                                 <th style="color: #000; font-weight: bold;">Plan</th>
                                 <th style="color: #000; font-weight: bold;">Executions</th>
@@ -276,9 +277,12 @@
                                 <td>
                                     <div>
                                         <strong>{{ pattern.database }}.{{ pattern.collection }}</strong>
-                                        <br>
-                                        <small class="text-muted">Hash: {{ pattern.query_hash[:8] }}...</small>
                                     </div>
+                                </td>
+                                <td>
+                                    <code class="text-primary">{{ pattern.query_hash[:12] }}...</code>
+                                    <br>
+                                    <small class="text-muted">{{ pattern.query_hash[12:] }}</small>
                                 </td>
                                 <td>
                                     <span class="badge bg-info">{{ pattern.query_type }}</span>
@@ -312,16 +316,25 @@
                                     <div class="text-danger">{{ pattern.max_duration|round|int }}ms</div>
                                 </td>
                                 <td class="text-center">
-                                    {% if pattern.avg_selectivity is not none and pattern.avg_selectivity >= 0 %}
-                                        <div>{{ pattern.avg_selectivity|round(4) }}%</div>
-                                        <small class="text-muted">
-                                            {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
-                                            {% if pattern.get('is_estimated') %}
-                                                <br><span class="badge bg-info">est.</span>
-                                            {% endif %}
-                                        </small>
+                                    {% if pattern.total_docs_examined > 0 %}
+                                        {% if pattern.avg_selectivity == 0 %}
+                                            <div class="text-warning">0.0%</div>
+                                            <small class="text-muted">
+                                                {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
+                                                <br><span class="badge bg-warning">No Results</span>
+                                            </small>
+                                        {% else %}
+                                            <div>{{ pattern.avg_selectivity|round(4) }}%</div>
+                                            <small class="text-muted">
+                                                {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
+                                                {% if pattern.get('is_estimated') %}
+                                                    <br><span class="badge bg-info">est.</span>
+                                                {% endif %}
+                                            </small>
+                                        {% endif %}
                                     {% else %}
                                         <span class="text-muted">N/A</span>
+                                        <br><small class="text-muted">No data examined</small>
                                     {% endif %}
                                 </td>
                                 <td class="actions-column">
@@ -478,12 +491,12 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('modalMinMaxDuration').textContent = `${minDuration}ms / ${maxDuration}ms`;
             
             // Efficiency metrics
-            if (selectivity !== null && selectivity >= 0) {
+            if (selectivity !== null && selectivity > 0 && totalDocsExamined > 0) {
                 document.getElementById('modalSelectivity').textContent = `${selectivity.toFixed(4)}%`;
                 document.getElementById('modalSelectivityDetail').textContent = `${totalReturned}/${totalDocsExamined} docs`;
             } else {
                 document.getElementById('modalSelectivity').textContent = 'N/A';
-                document.getElementById('modalSelectivityDetail').textContent = '';
+                document.getElementById('modalSelectivityDetail').textContent = `${totalReturned}/${totalDocsExamined} docs`;
             }
             
             document.getElementById('modalIndexEfficiency').textContent = indexEfficiency > 0 ? 

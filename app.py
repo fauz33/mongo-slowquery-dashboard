@@ -4,20 +4,184 @@ import os
 import re
 import json
 import hashlib
-from datetime import datetime
-import pandas as pd
+from datetime import datetime, timezone
+
+def parse_date_filter(date_str, is_end_date=False):
+    """Parse date filter preserving MongoDB log timezone information"""
+    if not date_str:
+        return None
+
+    try:
+        # Try fromisoformat first, then fall back to strptime
+        if 'T' in date_str:
+            # Handle ISO format - preserve timezone information from MongoDB logs
+            if not date_str.endswith(('Z', '+00:00', '-00:00')) and '+' not in date_str[-6:] and '-' not in date_str[-6:]:
+                # If no timezone specified, assume local time as entered by user
+                parsed_date = datetime.fromisoformat(date_str)
+            else:
+                # Has timezone info - preserve it
+                date_str = date_str.replace('Z', '+00:00')
+                parsed_date = datetime.fromisoformat(date_str)
+        else:
+            # Handle date-only format - assume local time
+            parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
+            if is_end_date:
+                # For end date, set to end of day
+                parsed_date = parsed_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Normalize: default to UTC when no timezone is provided
+        if parsed_date.tzinfo is None:
+            parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+        else:
+            parsed_date = parsed_date.astimezone(timezone.utc)
+
+        return parsed_date
+    except (ValueError, TypeError):
+        return None
+
+def normalize_datetime_for_comparison(dt):
+    """Normalize datetime object for safe comparison - preserve timezone information"""
+    if dt is None:
+        return None
+
+    # If timezone-naive, assume it's in the same timezone as MongoDB logs
+    if not hasattr(dt, 'tzinfo') or dt.tzinfo is None:
+        return dt
+
+    # Convert to UTC for consistent comparisons
+    return dt.astimezone(timezone.utc)
+
+def format_datetime_for_input(dt):
+    """Format datetime for HTML datetime-local input preserving timezone"""
+    if dt is None:
+        return None
+    
+    # For timezone-aware datetime, format appropriately
+    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+        # For datetime-local inputs, show the time as-is (preserving the MongoDB log timezone)
+        return dt.strftime('%Y-%m-%dT%H:%M')
+    else:
+        # Timezone-naive - format normally
+        return dt.strftime('%Y-%m-%dT%H:%M')
+
+def is_system_database(database_name):
+    """Check if a database is a MongoDB system database that should be excluded from analysis"""
+    if not database_name:
+        return False
+    system_databases = {'config', 'admin', 'local', 'system', '$external'}
+    return database_name in system_databases or database_name.startswith('$')
+
+def _passes_date_filter(query, start_date, end_date):
+    """Helper function to check if query passes date filters"""
+    if not start_date and not end_date:
+        return True
+    
+    query_timestamp = normalize_datetime_for_comparison(query.get('timestamp'))
+    if not query_timestamp:
+        return True
+        
+    if start_date and query_timestamp < start_date:
+        return False
+    if end_date and query_timestamp > end_date:
+        return False
+    return True
+
+def _passes_plan_filter(query, selected_plan):
+    """Helper function to check if query passes plan filter"""
+    if selected_plan == 'all':
+        return True
+        
+    query_plan = query.get('plan_summary', 'None')
+    if selected_plan == 'COLLSCAN' and query_plan != 'COLLSCAN':
+        return False
+    elif selected_plan == 'IXSCAN' and query_plan != 'IXSCAN':
+        return False
+    elif selected_plan == 'other' and query_plan in ['COLLSCAN', 'IXSCAN']:
+        return False
+    return True
+
+def _clean_query_text_for_export(query_text):
+    """Convert query text to parsed JSON object for clean export"""
+    if not query_text or query_text == 'N/A':
+        return 'N/A'
+    
+    try:
+        # Try to parse as JSON and return the actual JSON object
+        import json
+        if query_text.startswith('{') and query_text.endswith('}'):
+            # Parse JSON and return the object directly (not a string)
+            parsed_json = json.loads(query_text)
+            return parsed_json
+        else:
+            # Not JSON - clean basic escape sequences and return as string
+            return query_text.replace('\\"', '"').replace('\\\\', '\\')
+    except (json.JSONDecodeError, Exception):
+        # If JSON parsing fails, fall back to simple replacement
+        return query_text.replace('\\"', '"').replace('\\\\', '\\')
+
+def _batch_get_original_log_lines(queries):
+    """Efficiently batch process original log line retrieval"""
+    # Group queries by file path to minimize file operations
+    file_groups = {}
+    for i, query in enumerate(queries):
+        file_path = query.get('file_path')
+        if file_path not in file_groups:
+            file_groups[file_path] = []
+        file_groups[file_path].append((i, query))
+    
+    # Create results array
+    results = [None] * len(queries)
+    
+    # Process each file once
+    for file_path, file_queries in file_groups.items():
+        if not file_path:
+            continue
+            
+        # Read file lines needed in one go
+        line_numbers = [q.get('line_number') for _, q in file_queries if q.get('line_number')]
+        if not line_numbers:
+            continue
+            
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                for idx, query in file_queries:
+                    line_num = query.get('line_number')
+                    if line_num and 1 <= line_num <= len(lines):
+                        results[idx] = lines[line_num - 1].strip()
+        except (IOError, OSError):
+            continue
+    
+    return results
 from collections import defaultdict, Counter
-import tempfile
-import io
 import zipfile
 import tarfile
 import gzip
 import shutil
 
+# Import optimized analyzer
+try:
+    from optimized_analyzer import OptimizedMongoLogAnalyzer
+    OPTIMIZED_ANALYZER_AVAILABLE = True
+    print("✅ Optimized analyzer loaded successfully!")
+except ImportError as e:
+    print(f"⚠️  Optimized analyzer not available: {e}")
+    OPTIMIZED_ANALYZER_AVAILABLE = False
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['TEMP_FOLDER'] = 'temp'
+
+# Enable Jinja2 template caching for better performance
+app.jinja_env.cache = {}
+app.jinja_env.auto_reload = False  # Disable auto-reload in production
+app.config['TEMPLATES_AUTO_RELOAD'] = False
+
+# Performance limits for query results
+DEFAULT_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 1000
+DEFAULT_QUERY_LIMIT = 10000  # Maximum records to query without pagination
 
 # Add custom Jinja2 filter for index information
 @app.template_filter('extract_index_info')
@@ -30,21 +194,28 @@ def extract_index_info_filter(plan_summary):
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
 
-ALLOWED_EXTENSIONS = {'log', 'txt', 'zip', 'tar', 'gz'}
+# Legacy: Previously restricted file extensions - now accepts any extension
+# ALLOWED_EXTENSIONS = {'log', 'txt', 'zip', 'tar', 'gz'}  # No longer used
 
-def paginate_data(data, page=1, per_page=100):
+def paginate_data(data, page=1, per_page=DEFAULT_PAGE_SIZE):
     """
-    Paginate a list of data
+    Paginate a list of data with performance limits
     
     Args:
         data: List of items to paginate
         page: Current page number (1-based)
-        per_page: Number of items per page (100, 300, or 'all')
+        per_page: Number of items per page (with limits)
     
     Returns:
         dict with paginated data and pagination info
     """
+    # Apply performance limits
     if per_page == 'all' or per_page == -1:
+        per_page = min(len(data), DEFAULT_QUERY_LIMIT)
+    else:
+        per_page = min(int(per_page), MAX_PAGE_SIZE)
+    
+    if per_page == len(data) and len(data) <= DEFAULT_QUERY_LIMIT:
         return {
             'items': data,
             'page': 1,
@@ -99,7 +270,7 @@ def get_pagination_params(request):
     else:
         try:
             per_page = int(per_page)
-            if per_page not in [100, 300]:
+            if per_page not in [100, 250, 500, 1000]:
                 per_page = 100
         except (ValueError, TypeError):
             per_page = 100
@@ -107,30 +278,10 @@ def get_pagination_params(request):
     return page, per_page
 
 def allowed_file(filename):
-    # Check for .tar.gz files specifically
-    if filename.lower().endswith('.tar.gz'):
+    # Accept any file extension - let users upload any file type
+    # The log parsing logic will determine if it's valid MongoDB log content
+    if filename and filename.strip():
         return True
-    
-    # Check for date-suffixed log files (e.g., mongodb.log.20250826, app.log.2025-08-26)
-    if '.log.' in filename.lower() or '.txt.' in filename.lower():
-        return True
-    
-    # Check standard extensions
-    if '.' in filename:
-        ext = filename.rsplit('.', 1)[1].lower()
-        if ext in ALLOWED_EXTENSIONS:
-            return True
-        
-        # Check if it's a date pattern after log/txt (e.g., .log.20250826)
-        parts = filename.lower().split('.')
-        if len(parts) >= 3:
-            # Check if second-to-last part is 'log' or 'txt'
-            if parts[-2] in ['log', 'txt']:
-                # Check if last part looks like a date (8 digits or date format)
-                last_part = parts[-1]
-                if (last_part.isdigit() and len(last_part) == 8) or \
-                   (last_part.replace('-', '').replace('_', '').isdigit()):
-                    return True
     
     return False
 
@@ -210,15 +361,20 @@ def extract_archive(archive_path, extract_to_dir):
         return []
 
 def is_log_file(filename):
-    """Check if file is a log file"""
+    """Check if file is likely a log file - now very permissive since we accept any extension"""
     filename_lower = filename.lower()
     
-    # Standard log files
-    if filename_lower.endswith(('.log', '.txt')):
+    # Standard log file extensions
+    if filename_lower.endswith(('.log', '.logs', '.txt')):
         return True
     
     # Date-suffixed log files (e.g., mongodb.log.20250826)
     if '.log.' in filename_lower or '.txt.' in filename_lower:
+        return True
+    
+    # Check for MongoDB-related keywords in filename
+    mongodb_keywords = ['mongodb', 'mongo', 'slow', 'error', 'audit', 'query']
+    if any(keyword in filename_lower for keyword in mongodb_keywords):
         return True
     
     # Check pattern: something.log.datepattern or something.txt.datepattern
@@ -231,6 +387,11 @@ def is_log_file(filename):
             if (last_part.isdigit() and len(last_part) == 8) or \
                (last_part.replace('-', '').replace('_', '').isdigit()):
                 return True
+    
+    # If no extension or unknown extension, assume it could be a log file
+    # This is very permissive - let the content parsing determine if it's valid
+    if '.' not in filename or filename_lower.split('.')[-1] not in ['zip', 'tar', 'gz', 'rar']:
+        return True
     
     return False
 
@@ -420,7 +581,7 @@ class MongoLogAnalyzer:
                     events_found = True
             
             # Parse authentication events
-            elif component == 'ACCESS' and 'Successfully authenticated' in message:
+            elif component == 'ACCESS' and ('Successfully authenticated' in message or 'Authentication succeeded' in message):
                 principal = attr.get('user', attr.get('principalName', ''))
                 auth_db = attr.get('db', attr.get('authenticationDatabase', ''))
                 mechanism = attr.get('mechanism', 'SCRAM-SHA-256')
@@ -431,6 +592,7 @@ class MongoLogAnalyzer:
                     'username': principal,
                     'database': auth_db,
                     'mechanism': mechanism,
+                    'remote': attr.get('remote', ''),
                     'type': 'auth_success'
                 })
                 self.parsing_summary['auth_events'] += 1
@@ -450,6 +612,7 @@ class MongoLogAnalyzer:
                     'username': principal,
                     'database': auth_db,
                     'mechanism': mechanism,
+                    'remote': attr.get('remote', ''),
                     'type': 'auth_failure'
                 })
                 self.parsing_summary['auth_events'] += 1
@@ -723,12 +886,19 @@ class MongoLogAnalyzer:
             elif 'X.509' in line:
                 mechanism = 'X.509'
             
+            # Extract remote IP from log line if available
+            remote = ''
+            remote_match = re.search(r'remote:\s*([^\s,]+)', line)
+            if remote_match:
+                remote = remote_match.group(1)
+            
             self.authentications.append({
                 'timestamp': timestamp,
                 'connection_id': conn_id,
                 'username': username,
                 'database': database,
                 'mechanism': mechanism,
+                'remote': remote,
                 'type': 'auth_success'
             })
         
@@ -754,12 +924,19 @@ class MongoLogAnalyzer:
             elif 'X.509' in line:
                 mechanism = 'X.509'
             
+            # Extract remote IP from log line if available
+            remote = ''
+            remote_match = re.search(r'remote:\s*([^\s,]+)', line)
+            if remote_match:
+                remote = remote_match.group(1)
+            
             self.authentications.append({
                 'timestamp': timestamp,
                 'connection_id': conn_id,
                 'username': username,
                 'database': database,
                 'mechanism': mechanism,
+                'remote': remote,
                 'type': 'auth_failure'
             })
         
@@ -980,120 +1157,63 @@ class MongoLogAnalyzer:
         
         return stats
     
-    def search_logs(self, keyword=None, field_name=None, field_value=None, use_regex=False, start_date=None, end_date=None, limit=100):
-        """Search through log entries with various criteria"""
-        import re
+    def search_logs(self, keyword=None, field_name=None, field_value=None,
+                    start_date=None, end_date=None, limit=100, conditions=None):
+        """Search through log entries with optional field and advanced condition filters."""
         results = []
-        
-        for file_path, raw_lines in self.raw_log_data.items():
+        total_found = 0
+
+        normalized_start = normalize_datetime_for_comparison(start_date) if start_date else None
+        normalized_end = normalize_datetime_for_comparison(end_date) if end_date else None
+
+        eff_conditions = []
+        if keyword:
+            eff_conditions.append({'type': 'keyword', 'value': keyword, 'regex': False, 'case_sensitive': False, 'negate': False})
+        if field_name and field_value:
+            eff_conditions.append({'type': 'field', 'name': field_name, 'value': field_value, 'regex': False, 'case_sensitive': False, 'negate': False})
+        if conditions:
+            eff_conditions.extend(conditions)
+
+        for file_path, raw_lines in (self.raw_log_data or {}).items():
             for line_num, line in enumerate(raw_lines, 1):
+                line_stripped = line.rstrip('\n')
+                parsed_json = None
                 try:
-                    # Parse JSON to get timestamp for date filtering
-                    log_entry = json.loads(line.strip())
-                    timestamp = self.extract_timestamp_from_json(log_entry.get('t', {}))
-                    
-                    # Apply date filters
-                    if start_date and timestamp < start_date:
+                    parsed_json = json.loads(line_stripped)
+                except Exception:
+                    parsed_json = None
+
+                timestamp = None
+                if parsed_json:
+                    timestamp = self.extract_timestamp_from_json(parsed_json.get('t', {}))
+                if not timestamp:
+                    timestamp = self._ml_try_parse_timestamp_from_line(line_stripped)
+
+                if normalized_start or normalized_end:
+                    if not timestamp:
                         continue
-                    if end_date and timestamp > end_date:
+                    normalized_ts = normalize_datetime_for_comparison(timestamp)
+                    if normalized_start and normalized_ts and normalized_ts < normalized_start:
                         continue
-                    
-                    # Apply search criteria
-                    match = True
-                    
-                    if keyword:
-                        # Simple keyword search in entire line
-                        if use_regex:
-                            if not re.search(keyword, line, re.IGNORECASE):
-                                match = False
-                        else:
-                            if keyword.lower() not in line.lower():
-                                match = False
-                    
-                    if field_name and field_value and match:
-                        # Field-specific search
-                        field_data = self.get_nested_field(log_entry, field_name)
-                        if field_data is None:
-                            match = False
-                        else:
-                            field_str = str(field_data)
-                            if use_regex:
-                                if not re.search(field_value, field_str, re.IGNORECASE):
-                                    match = False
-                            else:
-                                if field_value.lower() not in field_str.lower():
-                                    match = False
-                    
-                    if match:
-                        results.append({
-                            'file_path': file_path,
-                            'line_number': line_num,
-                            'timestamp': timestamp,
-                            'raw_line': line.strip(),
-                            'parsed_json': log_entry
-                        })
-                        
-                        if len(results) >= limit:
-                            break
-                            
-                except (json.JSONDecodeError, Exception):
-                    # Try to extract timestamp from malformed JSON
-                    timestamp = None
-                    # Try different timestamp patterns
-                    timestamp_patterns = [
-                        r'"t":\{"\\$date":"([^"]+)"\}',  # Escaped format
-                        r'"t":\{"\$date":"([^"]+)"\}',   # Standard format
-                        r'"t":\{"[$]date":"([^"]+)"\}'   # Alternative format
-                    ]
-                    
-                    for pattern in timestamp_patterns:
-                        timestamp_match = re.search(pattern, line)
-                        if timestamp_match:
-                            try:
-                                timestamp_str = timestamp_match.group(1)
-                                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                                break
-                            except:
-                                continue
-                    
-                    # Apply date filters even for malformed JSON if we have timestamp
-                    if timestamp:
-                        if start_date and timestamp < start_date:
-                            continue
-                        if end_date and timestamp > end_date:
-                            continue
-                    
-                    # For non-JSON lines, only do keyword search
-                    if keyword:
-                        if use_regex:
-                            if re.search(keyword, line, re.IGNORECASE):
-                                results.append({
-                                    'file_path': file_path,
-                                    'line_number': line_num,
-                                    'timestamp': timestamp,
-                                    'raw_line': line.strip(),
-                                    'parsed_json': None
-                                })
-                        else:
-                            if keyword.lower() in line.lower():
-                                results.append({
-                                    'file_path': file_path,
-                                    'line_number': line_num,
-                                    'timestamp': timestamp,
-                                    'raw_line': line.strip(),
-                                    'parsed_json': None
-                                })
-                                
-                        if len(results) >= limit:
-                            break
-            
-            if len(results) >= limit:
-                break
-        
-        # Sort by timestamp if available, otherwise by file and line number
+                    if normalized_end and normalized_ts and normalized_ts > normalized_end:
+                        continue
+
+                if eff_conditions:
+                    if not self._ml_line_matches_conditions(line_stripped, parsed_json, eff_conditions):
+                        continue
+
+                total_found += 1
+                if len(results) < limit:
+                    results.append({
+                        'file_path': file_path,
+                        'line_number': line_num,
+                        'timestamp': timestamp,
+                        'raw_line': line_stripped,
+                        'parsed_json': parsed_json or {}
+                    })
+
         results.sort(key=lambda x: (x['timestamp'] or datetime.min, x['file_path'], x['line_number']), reverse=True)
-        
-        return results
+        return {'results': results, 'total_found': total_found}
     
     def get_nested_field(self, obj, field_path):
         """Get nested field value using dot notation (e.g., 'attr.remote', 'command.find')"""
@@ -1119,6 +1239,132 @@ class MongoLogAnalyzer:
             if 1 <= line_number <= len(raw_lines):
                 return raw_lines[line_number - 1]
         return None
+
+    # Ephemeral and streaming search helpers for compatibility with routes
+    def _ml_try_parse_timestamp_from_line(self, line):
+        import re
+        patterns = [
+            r'"t":\{"\\$date":"([^"]+)"\}',
+            r'"t":\{"\$date":"([^"]+)"\}',
+            r'"t":\{"[$]date":"([^"]+)"\}'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if match:
+                try:
+                    return datetime.fromisoformat(match.group(1).replace('Z', '+00:00'))
+                except Exception:
+                    continue
+        return None
+
+    def _ml_get_nested_field(self, obj, field_path):
+        if not field_path or not isinstance(obj, dict):
+            return None
+        cur = obj
+        for part in str(field_path).split('.'):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return None
+        return cur
+
+    def _ml_line_matches_conditions(self, raw_line, parsed_json, conditions):
+        if not conditions:
+            return True
+        import re
+        compiled = []
+        for c in conditions:
+            ctype = (c or {}).get('type', 'keyword')
+            name = (c or {}).get('name', '')
+            value = (c or {}).get('value', '')
+            is_regex = bool((c or {}).get('regex'))
+            case_sensitive = bool((c or {}).get('case_sensitive'))
+            negate = bool((c or {}).get('negate'))
+            flags = 0 if case_sensitive else re.IGNORECASE
+            patt = None
+            if is_regex and value:
+                try:
+                    patt = re.compile(value, flags)
+                except re.error:
+                    patt = None
+            compiled.append((ctype, name, value, patt, is_regex, case_sensitive, negate))
+        for (ctype, name, value, patt, is_regex, case_sensitive, negate) in compiled:
+            matched = False
+            if ctype == 'field':
+                field_val = self._ml_get_nested_field(parsed_json or {}, name) if name else None
+                field_str = '' if field_val is None else str(field_val)
+                if is_regex and patt is not None:
+                    matched = patt.search(field_str) is not None
+                elif is_regex and patt is None:
+                    matched = False
+                else:
+                    matched = value in field_str if case_sensitive else (value.lower() in field_str.lower())
+            else:
+                text = raw_line or ''
+                if is_regex and patt is not None:
+                    matched = patt.search(text) is not None
+                elif is_regex and patt is None:
+                    matched = False
+                else:
+                    matched = value in text if case_sensitive else (value.lower() in text.lower())
+            if negate:
+                matched = not matched
+            if not matched:
+                return False
+        return True
+
+    def search_logs_ephemeral(self, raw_map, keyword=None, field_name=None, field_value=None,
+                               start_date=None, end_date=None, limit=100, conditions=None):
+        from datetime import datetime
+        results = []
+        total_found = 0
+        start_dt = start_date
+        end_dt = end_date
+        eff_conditions = []
+        if keyword:
+            eff_conditions.append({'type': 'keyword', 'value': keyword, 'regex': False, 'case_sensitive': False, 'negate': False})
+        if field_name and field_value:
+            eff_conditions.append({'type': 'field', 'name': field_name, 'value': field_value, 'regex': False, 'case_sensitive': False, 'negate': False})
+        if conditions:
+            eff_conditions.extend(conditions)
+        for file_path, lines in (raw_map or {}).items():
+            for idx, line in enumerate(lines, 1):
+                s = line.rstrip('\n')
+                parsed = None
+                ts = None
+                try:
+                    parsed = json.loads(s)
+                    t = parsed.get('t', {})
+                    ts_str = t.get('$date') if isinstance(t, dict) else None
+                    if ts_str:
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                except Exception:
+                    parsed = None
+                    ts = None
+                if start_dt or end_dt:
+                    if not ts:
+                        continue
+                    if start_dt and ts < start_dt:
+                        continue
+                    if end_dt and ts > end_dt:
+                        continue
+                if not self._ml_line_matches_conditions(s, parsed, eff_conditions):
+                    continue
+                total_found += 1
+                if len(results) < limit:
+                    results.append({'file_path': file_path, 'line_number': idx, 'timestamp': ts, 'raw_line': s})
+        return {'results': results, 'total_found': total_found}
+
+    def search_logs_streaming(self, keyword=None, field_name=None, field_value=None,
+                               start_date=None, end_date=None, limit=100, compute_total=False, conditions=None):
+        raw_map = getattr(self, 'raw_log_data', {}) or {}
+        search_data = self.search_logs_ephemeral(raw_map, keyword, field_name, field_value, start_date, end_date, limit, conditions)
+        if isinstance(search_data, dict):
+            if compute_total:
+                return search_data
+            return {'results': search_data.get('results', []), 'total_found': len(search_data.get('results', []))}
+        # Fallback compatibility if older analyzer returned list
+        return {'results': search_data, 'total_found': len(search_data)}
     
     def get_available_date_range(self):
         """Get the date range from all parsed log entries"""
@@ -1292,54 +1538,175 @@ class MongoLogAnalyzer:
         return messages
     
     def analyze_index_suggestions(self):
-        """Analyze COLLSCAN queries and generate index suggestions for high-accuracy scenarios"""
+        """Analyze queries to suggest high-accuracy indexes (ranked, IXSCAN-aware)."""
         import re
         from collections import defaultdict
-        
+
+        def spec_from_suggestion(sug):
+            # Expect 'index': '{a: 1, b: -1}', parse lightly
+            try:
+                inside = sug.get('index', '').strip().strip('{}').strip()
+                parts = [p.strip() for p in inside.split(',') if p.strip()]
+                fields = []
+                for p in parts:
+                    if ':' in p:
+                        f, d = p.split(':', 1)
+                        fields.append((f.strip(), int(d.strip())))
+                return tuple(fields)
+            except Exception:
+                return tuple()
+
         suggestions = defaultdict(lambda: {
             'collection_name': '',
             'suggestions': [],
             'collscan_queries': 0,
+            'ixscan_ineff_queries': 0,
             'total_docs_examined': 0,
+            'total_returned': 0,
+            'total_duration': 0,
             'avg_duration': 0,
             'sample_queries': []
         })
-        
-        # Analyze each slow query
+
+        per_spec = defaultdict(lambda: {
+            'collection': '',
+            'spec': tuple(),
+            'occurrences': 0,
+            'total_duration': 0,
+            'docs_examined': 0,
+            'returned': 0,
+            'reason': '',
+            'confidence': 'high'
+        })
+
+        # Weight by patterns (total executions across similar shapes)
+        try:
+            patterns = self.analyze_query_patterns()
+        except Exception:
+            patterns = {}
+
         for query in self.slow_queries:
-            if query.get('plan_summary') != 'COLLSCAN':
+            plan = (query.get('plan_summary') or '').upper()
+            is_collscan = plan == 'COLLSCAN'
+            is_ixscan = 'IXSCAN' in plan
+            if not (is_collscan or is_ixscan):
                 continue
-                
+
             db_collection = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}"
-            suggestions[db_collection]['collection_name'] = db_collection
-            suggestions[db_collection]['collscan_queries'] += 1
-            suggestions[db_collection]['total_docs_examined'] += self._get_docs_examined(query)
-            suggestions[db_collection]['avg_duration'] += query.get('duration', 0)
-            
-            # Store sample query for analysis
-            if len(suggestions[db_collection]['sample_queries']) < 3:
-                suggestions[db_collection]['sample_queries'].append({
+            s = suggestions[db_collection]
+            s['collection_name'] = db_collection
+            if is_collscan:
+                s['collscan_queries'] += 1
+            if is_ixscan:
+                s['ixscan_ineff_queries'] += 1
+
+            # Prefer values already stored in DB; fall back to original-line parsing only if missing
+            docs = 0
+            try:
+                docs = int(
+                    (query.get('docsExamined') if query.get('docsExamined') is not None else
+                     query.get('docs_examined') if query.get('docs_examined') is not None else 0)
+                )
+            except Exception:
+                docs = 0
+            if not docs:
+                try:
+                    docs = int(self._get_docs_examined(query) or 0)
+                except Exception:
+                    docs = 0
+
+            try:
+                ret = int(query.get('nReturned', query.get('docs_returned', 0)) or 0)
+            except Exception:
+                ret = 0
+            dur = int(query.get('duration', 0) or 0)
+            s['total_docs_examined'] += docs
+            s['total_returned'] += ret
+            s['total_duration'] += dur
+            if len(s['sample_queries']) < 3:
+                s['sample_queries'].append({
                     'query': query.get('query', ''),
-                    'duration': query.get('duration', 0),
+                    'duration': dur,
                     'timestamp': query.get('timestamp')
                 })
-            
-            # Parse query for index suggestions
+
+            # Derive candidate suggestions (high-accuracy only)
             query_str = query.get('query', '')
             parsed_suggestions = self._extract_index_suggestions(query_str, query.get('collection', 'unknown'))
-            
-            # Add unique suggestions
-            for suggestion in parsed_suggestions:
-                if suggestion not in suggestions[db_collection]['suggestions']:
-                    suggestions[db_collection]['suggestions'].append(suggestion)
-        
-        # Calculate averages and finalize
-        for collection, data in suggestions.items():
-            if data['collscan_queries'] > 0:
-                data['avg_duration'] = data['avg_duration'] / data['collscan_queries']
-                data['avg_docs_per_query'] = data['total_docs_examined'] / data['collscan_queries']
-        
-        return dict(suggestions)
+            for sug in parsed_suggestions:
+                spec = spec_from_suggestion(sug)
+                if not spec:
+                    continue
+                key = (db_collection, spec)
+                rec = per_spec[key]
+                rec['collection'] = db_collection
+                rec['spec'] = spec
+                rec['occurrences'] += 1
+                rec['total_duration'] += dur
+                rec['docs_examined'] += docs
+                rec['returned'] += ret
+                rec['reason'] = 'COLLSCAN filter/sort coverage' if is_collscan else 'IXSCAN inefficiency improvement'
+
+                # Apply patterns weighting
+                try:
+                    qh = query.get('query_hash') or ''
+                    if not qh and hasattr(self, '_generate_synthetic_query_hash'):
+                        qh = self._generate_synthetic_query_hash(query)
+                    pk = f"{query.get('database','unknown')}.{query.get('collection','unknown')}_{qh}_{query.get('plan_summary','None')}"
+                    pat = patterns.get(pk)
+                    if pat:
+                        rec['occurrences'] += max(0, int(pat.get('total_count', 0) or 0) - 1)
+                        rec['total_duration'] += int((pat.get('avg_duration', 0) or 0) * (pat.get('total_count', 0) or 0))
+                except Exception:
+                    pass
+
+        # Rank and deduplicate (coverage)
+        def is_covered(shorter, longer):
+            return len(shorter) <= len(longer) and shorter == longer[:len(shorter)]
+
+        coll_to_recs = defaultdict(list)
+        for (coll, spec), rec in per_spec.items():
+            ineff = (rec['docs_examined'] / max(1, rec['returned'])) if rec['returned'] is not None else 1.0
+            impact = rec['total_duration'] * max(1.0, ineff)
+            rec['impact_score'] = int(impact)
+            rec['inefficiency_ratio'] = round(ineff, 2)
+            rec['avg_duration'] = int(rec['total_duration'] / max(1, rec['occurrences']))
+            coll_to_recs[coll].append(rec)
+
+        results = {}
+        for coll, items in coll_to_recs.items():
+            items.sort(key=lambda r: (-r['impact_score'], -len(r['spec'])))
+            kept = []
+            for r in items:
+                if any(is_covered(r['spec'], k['spec']) for k in kept):
+                    continue
+                kept.append(r)
+
+            final = []
+            for r in kept[:10]:
+                idx_fields = ', '.join([f"{f}: {d}" for f, d in r['spec']])
+                final.append({
+                    'type': 'compound',
+                    'index': f'{{{idx_fields}}}',
+                    'reason': r['reason'],
+                    'priority': 'high',
+                    'confidence': 'high',
+                    'impact_score': r['impact_score'],
+                    'occurrences': r['occurrences'],
+                    'avg_duration_ms': r['avg_duration'],
+                    'inefficiency_ratio': r['inefficiency_ratio'],
+                    'command': f"db.{coll.split('.',1)[1]}.createIndex({{{idx_fields}}})"
+                })
+
+            s = suggestions[coll]
+            total_q = s['collscan_queries'] + s['ixscan_ineff_queries']
+            if total_q > 0:
+                s['avg_duration'] = s['total_duration'] / total_q
+                s['avg_docs_per_query'] = s['total_docs_examined'] / total_q
+            s['suggestions'] = final
+            results[coll] = s
+
+        return dict(results)
     
     def _get_docs_examined(self, query):
         """Extract docsExamined from query data"""
@@ -1494,7 +1861,7 @@ class MongoLogAnalyzer:
             'total_docs_examined': 0,
             'total_keys_examined': 0,
             'total_returned': 0,
-            'avg_selectivity': 0,
+            'avg_selectivity': None,
             'avg_index_efficiency': 0,
             'sample_query': '',
             'slowest_query_full': '',
@@ -1547,6 +1914,9 @@ class MongoLogAnalyzer:
                 'keys_examined': metrics.get('keysExamined', 0),
                 'returned': metrics.get('nReturned', 0),
                 'cpu_nanos': metrics.get('cpuNanos', 0),
+                'bytes_read': metrics.get('bytesRead', 0),
+                'bytes_written': metrics.get('bytesWritten', 0),
+                'memory_mb': metrics.get('memoryMb', 0),
                 'timestamp': query.get('timestamp')
             }
             
@@ -1554,6 +1924,11 @@ class MongoLogAnalyzer:
             pattern['total_count'] += 1
             pattern['last_seen'] = query.get('timestamp')
             
+            # Aggregate additional metrics when available
+            pattern['total_bytes_read'] = pattern.get('total_bytes_read', 0) + (metrics.get('bytesRead', 0) or 0)
+            pattern['total_bytes_written'] = pattern.get('total_bytes_written', 0) + (metrics.get('bytesWritten', 0) or 0)
+            pattern['total_memory_mb'] = pattern.get('total_memory_mb', 0) + (metrics.get('memoryMb', 0) or 0)
+
             # Update slowest query if this execution is slower, or if same duration but more recent
             current_duration = query.get('duration', 0)
             current_max_duration = max([execution['duration'] for execution in pattern['executions']])
@@ -1593,6 +1968,9 @@ class MongoLogAnalyzer:
             # Calculate selectivity (docs returned / docs examined)
             if pattern['total_docs_examined'] > 0:
                 pattern['avg_selectivity'] = (pattern['total_returned'] / pattern['total_docs_examined']) * 100
+            else:
+                # Debug: if no docs examined, keep selectivity undefined instead of 0
+                pattern['avg_selectivity'] = None
             
             # Calculate index efficiency (keys examined / docs examined)  
             if pattern['total_docs_examined'] > 0:
@@ -1658,14 +2036,37 @@ class MongoLogAnalyzer:
                         # Extract pipeline structure for aggregation
                         if 'pipeline' in query_obj and isinstance(query_obj['pipeline'], list):
                             pipeline_ops = []
+                            sort_parts = []
                             for stage in query_obj['pipeline']:
                                 if isinstance(stage, dict):
                                     for op in stage.keys():
                                         if op.startswith('$'):
                                             pipeline_ops.append(op)
+                                    # Capture $sort keys/directions when present
+                                    if '$sort' in stage and isinstance(stage['$sort'], dict):
+                                        for sf, sd in stage['$sort'].items():
+                                            try:
+                                                d = int(sd)
+                                            except Exception:
+                                                d = 1
+                                            sort_parts.append(f"{sf}:{d}")
                             if pipeline_ops:
                                 normalized_parts.append(f"pipeline:{','.join(pipeline_ops)}")
-                    
+                            if sort_parts:
+                                normalized_parts.append(f"pipeline_sort:{','.join(sort_parts)}")
+                    # Include sort keys if present
+                    sort_spec = None
+                    if isinstance(query_obj, dict) and 'sort' in query_obj and isinstance(query_obj['sort'], dict):
+                        sort_parts = []
+                        for sf, sd in query_obj['sort'].items():
+                            try:
+                                d = int(sd)
+                            except Exception:
+                                d = 1
+                            sort_parts.append(f"{sf}:{d}")
+                        if sort_parts:
+                            normalized_parts.append(f"sort:{','.join(sort_parts)}")
+
                     # Create normalized query string
                     normalized_query = '|'.join(normalized_parts)
                 else:
@@ -1721,17 +2122,30 @@ class MongoLogAnalyzer:
         """Extract detailed metrics from original log line or parsed data"""
         # First check if metrics are already available in the query object
         if ('docsExamined' in query or 'docs_examined' in query or 
-            'nReturned' in query or 'n_returned' in query or 
+            'nReturned' in query or 'n_returned' in query or 'docs_returned' in query or
             'keysExamined' in query or 'keys_examined' in query):
             return {
-                'docsExamined': (query.get('docsExamined') if query.get('docsExamined') is not None else query.get('docs_examined') if query.get('docs_examined') is not None else 0),
-                'keysExamined': (query.get('keysExamined') if query.get('keysExamined') is not None else query.get('keys_examined') if query.get('keys_examined') is not None else 0), 
-                'nReturned': (query.get('nReturned') if query.get('nReturned') is not None else query.get('n_returned') if query.get('n_returned') is not None else 0),
+                'docsExamined': (
+                    query.get('docsExamined') if query.get('docsExamined') is not None else
+                    query.get('docs_examined') if query.get('docs_examined') is not None else 0
+                ),
+                'keysExamined': (
+                    query.get('keysExamined') if query.get('keysExamined') is not None else
+                    query.get('keys_examined') if query.get('keys_examined') is not None else 0
+                ), 
+                'nReturned': (
+                    query.get('nReturned') if query.get('nReturned') is not None else
+                    query.get('n_returned') if query.get('n_returned') is not None else
+                    query.get('docs_returned') if query.get('docs_returned') is not None else 0
+                ),
                 'cpuNanos': query.get('cpuNanos', 0),
                 'planCacheKey': query.get('planCacheKey', ''),
                 'queryFramework': query.get('queryFramework', ''),
                 'readConcern': query.get('readConcern', {}),
-                'writeConcern': query.get('writeConcern', {})
+                'writeConcern': query.get('writeConcern', {}),
+                'bytesRead': query.get('bytesRead', 0),
+                'bytesWritten': query.get('bytesWritten', 0),
+                'memoryMb': query.get('memoryMb', 0)
             }
         
         # Try to extract from original log line
@@ -1767,6 +2181,26 @@ class MongoLogAnalyzer:
                     attr.get('command', {}).get('nReturned') if attr.get('command', {}).get('nReturned') is not None else 0
                 )
                 
+                # Disk/IO and memory (best-effort)
+                bytes_read = (
+                    attr.get('bytesRead') if attr.get('bytesRead') is not None else
+                    (attr.get('network', {}).get('bytesRead') if isinstance(attr.get('network', {}), dict) else 0)
+                )
+                bytes_written = (
+                    attr.get('bytesWritten') if attr.get('bytesWritten') is not None else
+                    (attr.get('network', {}).get('bytesWritten') if isinstance(attr.get('network', {}), dict) else 0)
+                )
+                mem_mb = None
+                mem = attr.get('memory', {}) if isinstance(attr.get('memory', {}), dict) else {}
+                if mem:
+                    mem_mb = mem.get('residentMb') or mem.get('residentMB') or mem.get('workingSetMb')
+                if mem_mb is None:
+                    ws = attr.get('workingSet') or attr.get('resident')
+                    if isinstance(ws, (int, float)):
+                        mem_mb = round(float(ws) / (1024*1024), 2)
+                if mem_mb is None:
+                    mem_mb = 0
+
                 return {
                     'docsExamined': docs_examined,
                     'keysExamined': keys_examined,
@@ -1775,7 +2209,10 @@ class MongoLogAnalyzer:
                     'planCacheKey': attr.get('planCacheKey', ''),
                     'queryFramework': attr.get('queryFramework', ''),
                     'readConcern': attr.get('readConcern', {}),
-                    'writeConcern': attr.get('writeConcern', {})
+                    'writeConcern': attr.get('writeConcern', {}),
+                    'bytesRead': bytes_read or 0,
+                    'bytesWritten': bytes_written or 0,
+                    'memoryMb': mem_mb or 0
                 }
         except Exception as e:
             # For debugging: log what went wrong
@@ -1913,7 +2350,7 @@ class MongoLogAnalyzer:
         score = 0
         
         # High duration variance suggests inconsistent performance (using min/max range instead)
-        duration_range = pattern['max_duration'] - pattern['min_duration']
+        duration_range = pattern.get('max_duration', 0) - pattern.get('min_duration', 0)
         if duration_range > pattern['avg_duration'] * 0.5:
             score += 2
         
@@ -1922,7 +2359,7 @@ class MongoLogAnalyzer:
             score += 3
         
         # High docs examined vs returned ratio
-        if pattern['avg_selectivity'] < 10:  # Less than 10% selectivity
+        if pattern['avg_selectivity'] is not None and pattern['avg_selectivity'] < 10:  # Less than 10% selectivity
             score += 2
         
         # Frequent execution
@@ -1944,7 +2381,19 @@ class MongoLogAnalyzer:
         else:
             return 'low'
 
-analyzer = MongoLogAnalyzer()
+# Global analyzer instance - use optimized version if available
+if OPTIMIZED_ANALYZER_AVAILABLE:
+    analyzer = OptimizedMongoLogAnalyzer({
+        'use_database': True,        # Enable database storage
+        'chunk_size': 50000,
+        'max_workers': 4,
+        'store_raw_lines': False,     # Reduce memory usage - don't store raw lines
+        'database_path': 'mongodb_analysis.db'  # Persistent database file
+    })
+    print("🚀 Using optimized analyzer for better performance!")
+else:
+    analyzer = MongoLogAnalyzer()
+    print("⚠️  Using original analyzer (slower)")
 
 @app.route('/')
 def index():
@@ -1953,12 +2402,12 @@ def index():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'files' not in request.files:
-        flash('No files selected')
-        return redirect(request.url)
+        flash('No files selected. Please choose files to upload.', 'error')
+        return redirect(url_for('index'))
     
     files = request.files.getlist('files')
     if not files or files[0].filename == '':
-        flash('No files selected')
+        flash('No files selected. Please choose files to upload.', 'error')
         return redirect(url_for('index'))
     
     # Clean up temp folder before processing new uploads
@@ -1991,10 +2440,10 @@ def upload_file():
                     # Regular log file - keep temp path for processing
                     pass
                 else:
-                    flash(f'Invalid file type for {file.filename}. Please upload .log, .txt, .zip, .tar, or .tar.gz files only.')
+                    flash(f'Invalid filename: {file.filename}. Please upload a different file and try again.', 'error')
                     return redirect(url_for('index'))
             else:
-                flash(f'Invalid file type for {file.filename}. Please upload .log, .txt, .zip, .tar, or .tar.gz files only.')
+                flash(f'Invalid filename: {file.filename}. Please upload a different file and try again.', 'error')
                 return redirect(url_for('index'))
         
         # Combine temp files and extracted files for analysis
@@ -2007,14 +2456,66 @@ def upload_file():
         if log_files_to_analyze:
             # Clear previous analysis (create new analyzer instance)
             global analyzer
-            analyzer = MongoLogAnalyzer()
+            # Use optimized analyzer for upload processing
+            if OPTIMIZED_ANALYZER_AVAILABLE:
+                analyzer = OptimizedMongoLogAnalyzer({
+                    'use_database': True,        # Enable database storage
+                    'chunk_size': 50000,
+                    'max_workers': 4,
+                    'store_raw_lines': False,     # Reduce memory usage
+                    'database_path': 'mongodb_analysis.db'  # Persistent database file
+                })
+                # Clear existing database data for new upload
+                analyzer.clear_database_data()
+                
+                # PHASE 3: Enable verbose logging for multi-file uploads to show progress
+                analyzer.config['verbose_logging'] = len(log_files_to_analyze) > 1
+                
+                print("🚀 Upload: Using optimized analyzer with database cleanup!")
+                if len(log_files_to_analyze) > 1:
+                    print(f"📁 PHASE 3: Multi-file upload detected ({len(log_files_to_analyze)} files) - using single bulk session")
+            else:
+                analyzer = MongoLogAnalyzer()
+                print("⚠️  Upload: Using original analyzer (slower)")
             
-            # Analyze all files
+            # Record source files for streaming grep-like search (low-memory search)
+            try:
+                analyzer.source_log_files = [os.path.abspath(p) for p in log_files_to_analyze]
+                analyzer.source_total_bytes = sum(os.path.getsize(p) for p in analyzer.source_log_files if os.path.exists(p))
+            except Exception:
+                analyzer.source_log_files = [p for p in log_files_to_analyze if os.path.exists(p)]
+                analyzer.source_total_bytes = 0
+
+            # PHASE 3: Analyze all files with single bulk session for multi-file uploads
             processed_count = 0
-            for filepath in log_files_to_analyze:
-                if os.path.exists(filepath) and is_log_file(filepath):
-                    analyzer.parse_log_file(filepath)
-                    processed_count += 1
+            is_multi_file = len(log_files_to_analyze) > 1
+            
+            if OPTIMIZED_ANALYZER_AVAILABLE and is_multi_file:
+                # Start single bulk session for all files
+                print(f"🚀 PHASE 3: Starting single bulk session for {len(log_files_to_analyze)} files")
+                total_size_mb = sum(os.path.getsize(f) / (1024 * 1024) for f in log_files_to_analyze if os.path.exists(f))
+                analyzer.start_bulk_load(total_size_mb)
+                
+                try:
+                    for filepath in log_files_to_analyze:
+                        if os.path.exists(filepath) and is_log_file(filepath):
+                            print(f"📄 Processing {os.path.basename(filepath)} (skipping individual bulk session)...")
+                            analyzer.parse_log_file_optimized(filepath, skip_bulk_session=True)
+                            processed_count += 1
+                finally:
+                    # Complete the single bulk session
+                    print("🎯 PHASE 3: Completing single bulk session for all files")
+                    analyzer.finish_bulk_load()
+            else:
+                # Single file or fallback - use individual sessions
+                for filepath in log_files_to_analyze:
+                    if os.path.exists(filepath) and is_log_file(filepath):
+                        if OPTIMIZED_ANALYZER_AVAILABLE:
+                            print(f"🚀 Processing {os.path.basename(filepath)} with optimized analyzer...")
+                            analyzer.parse_log_file_optimized(filepath)
+                        else:
+                            analyzer.parse_log_file(filepath)
+                        processed_count += 1
             
             # Generate parsing summary messages
             summary_messages = analyzer.get_parsing_summary_message()
@@ -2023,7 +2524,7 @@ def upload_file():
             
             return redirect(url_for('dashboard'))
         else:
-            flash('No valid log files to process.')
+            flash('No valid log files to process. Please select different files and try again.', 'error')
             return redirect(url_for('index'))
             
     finally:
@@ -2033,8 +2534,8 @@ def upload_file():
 
 @app.route('/dashboard')
 def dashboard():
-    # Get available date range from log data
-    min_date, max_date = analyzer.get_available_date_range()
+    # PHASE 1 OPTIMIZATION: Use efficient SQL method instead of Python iteration
+    min_date, max_date = analyzer.get_available_date_range_sql()
     
     # Get filter parameters
     start_date_str = request.args.get('start_date')
@@ -2042,144 +2543,155 @@ def dashboard():
     ip_filter = request.args.get('ip_filter', '').strip()
     user_filter = request.args.get('user_filter', '').strip()
     
-    # Parse date filters
-    start_date = None
-    end_date = None
-    if start_date_str:
-        try:
-            start_date = datetime.fromisoformat(start_date_str)
-        except ValueError:
-            pass
-    if end_date_str:
-        try:
-            end_date = datetime.fromisoformat(end_date_str)
-        except ValueError:
-            pass
+    # Parse date filters with improved handling
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
     
-    # Get pagination parameters
-    page, per_page = get_pagination_params(request)
-    
-    # Get stats with filters applied
-    stats = analyzer.get_connection_stats(
+    # Get enhanced dashboard summary stats
+    stats = analyzer.get_dashboard_summary_stats(
         start_date=start_date,
         end_date=end_date,
         ip_filter=ip_filter,
         user_filter=user_filter
     )
     
-    # Paginate database access data
-    database_access_pagination = None
-    if hasattr(stats, 'database_access') and stats.database_access:
-        database_access_pagination = paginate_data(stats.database_access, page, per_page)
-    
-    # Paginate connections timeline
-    connections_timeline_pagination = None
-    if hasattr(stats, 'connections_timeline') and stats.connections_timeline:
-        connections_timeline_pagination = paginate_data(stats.connections_timeline, page, per_page)
-    
     return render_template('dashboard_results.html', 
                          stats=stats,
-                         database_access_pagination=database_access_pagination,
-                         connections_timeline_pagination=connections_timeline_pagination,
                          start_date=start_date_str,
                          end_date=end_date_str,
-                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
-                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
+                         min_date=format_datetime_for_input(min_date),
+                         max_date=format_datetime_for_input(max_date),
                          ip_filter=ip_filter,
                          user_filter=user_filter)
 
 @app.route('/api/stats')
 def api_stats():
-    stats = analyzer.get_connection_stats()
-    return jsonify(stats)
+    """API endpoint that works with both database and memory modes"""
+    try:
+        if hasattr(analyzer, 'config') and analyzer.config.get('use_database', False):
+            # Database mode - get stats from database
+            stats = analyzer.get_connection_stats()
+            # Also add slow queries count from database
+            if hasattr(analyzer, 'db_conn'):
+                import sqlite3
+                cursor = analyzer.db_conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM slow_queries')
+                slow_queries_count = cursor.fetchone()[0]
+                cursor.execute('SELECT COUNT(*) FROM connections')
+                connections_count = cursor.fetchone()[0]
+                cursor.execute('SELECT COUNT(*) FROM authentications')
+                auth_count = cursor.fetchone()[0]
+                
+                # Update stats with actual database counts
+                stats['slow_queries_count'] = slow_queries_count
+                stats['total_connections'] = connections_count
+                stats['auth_success_count'] = auth_count
+                
+                # Get unique databases from database
+                cursor.execute('SELECT DISTINCT database FROM slow_queries WHERE database != "" AND database IS NOT NULL')
+                unique_dbs = [row[0] for row in cursor.fetchall()]
+                stats['unique_databases'] = unique_dbs
+                
+        else:
+            # Memory mode - use original method
+            stats = analyzer.get_connection_stats()
+        
+        return jsonify(stats)
+    except Exception as e:
+        # Return empty stats on error
+        return jsonify({
+            'auth_failure_count': 0,
+            'auth_success_count': 0,
+            'authentications': [],
+            'connections_by_ip': {},
+            'connections_timeline': [],
+            'database_access': [],
+            'slow_queries_count': 0,
+            'total_connections': 0,
+            'unique_databases': [],
+            'unique_ips': 0,
+            'unique_users': [],
+            'user_activity': {},
+            'error': str(e)
+        })
 
 @app.route('/slow-queries')
 def slow_queries():
     # Ensure user correlation is done before filtering
     analyzer.correlate_users_with_access()
     
-    # Ensure all queries have query_hash (generate synthetic if missing)
-    for query in analyzer.slow_queries:
-        if not query.get('query_hash'):
-            query['query_hash'] = analyzer._generate_synthetic_query_hash(query)
+    # PHASE 1 OPTIMIZATION: Use efficient SQL methods instead of Python iteration
     
-    # Get unique databases for filtering
-    databases = set()
-    for query in analyzer.slow_queries:
-        if query.get('database') and query['database'] != 'unknown':
-            databases.add(query['database'])
+    # Get unique databases for filtering using SQL
+    databases = set(analyzer.get_distinct_databases_sql())
     
-    # Get available date range from log data
-    min_date, max_date = analyzer.get_available_date_range()
+    # Get available date range using SQL
+    min_date, max_date = analyzer.get_available_date_range_sql()
+    
+    # Note: Query hash generation handled per-query basis when needed for performance
     
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
     threshold = int(request.args.get('threshold', 100))
     selected_plan = request.args.get('plan_summary', 'all')
     view_mode = request.args.get('view_mode', 'all_executions')  # 'all_executions' or 'unique_queries'
+    grouping_type = request.args.get('grouping', 'pattern_key')  # 'pattern_key', 'namespace', or 'query_hash'
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
-    # Parse date filters
-    start_date = None
-    end_date = None
-    if start_date_str:
-        try:
-            start_date = datetime.fromisoformat(start_date_str)
-        except ValueError:
-            pass
-    if end_date_str:
-        try:
-            end_date = datetime.fromisoformat(end_date_str)
-        except ValueError:
-            pass
-    
-    # Filter slow queries
-    filtered_queries = []
-    for query in analyzer.slow_queries:
-        # Duration filter
-        if query['duration'] < threshold:
-            continue
-        
-        # Database filter
-        if selected_db != 'all' and query.get('database') != selected_db:
-            continue
-            
-        # Date filters
-        if start_date and query['timestamp'] < start_date:
-            continue
-        if end_date and query['timestamp'] > end_date:
-            continue
-        
-        # Plan summary filter
-        if selected_plan != 'all':
-            query_plan = query.get('plan_summary', 'None')
-            if selected_plan == 'COLLSCAN' and query_plan != 'COLLSCAN':
-                continue
-            elif selected_plan == 'IXSCAN' and query_plan != 'IXSCAN':
-                continue
-            elif selected_plan == 'other' and query_plan in ['COLLSCAN', 'IXSCAN']:
-                continue
-            
-        filtered_queries.append(query)
+    # Parse date filters with improved handling
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
     
     # Get pagination parameters
     page, per_page = get_pagination_params(request)
     
+    # Use SQL-based filtering for optimal performance
+    query_result = analyzer.get_slow_queries_filtered(
+        threshold=threshold,
+        database=selected_db,
+        plan_summary=selected_plan,
+        start_date=start_date.isoformat() if start_date else None,
+        end_date=end_date.isoformat() if end_date else None,
+        page=page,
+        per_page=per_page if view_mode != 'unique_queries' else None
+    )
+    
+    # Extract data from the returned dictionary
+    filtered_queries = query_result.get('items', [])
+    total_count = query_result.get('total', 0)
+    
     # Process data based on view mode
     if view_mode == 'unique_queries':
-        # Group queries by pattern
-        unique_queries = analyzer._group_queries_by_pattern(filtered_queries)
+        # Use pre-aggregated patterns with selected grouping strategy
+        unique_queries = analyzer.get_aggregated_patterns_by_grouping(
+            grouping=grouping_type,
+            threshold=threshold,
+            database=selected_db,
+            plan_summary=selected_plan,
+            start_date=start_date.isoformat() if start_date else None,
+            end_date=end_date.isoformat() if end_date else None,
+            limit=per_page * 10  # Get more for grouping
+        )
         display_data = unique_queries
         total_count = len(unique_queries)
+        # Apply pagination for unique queries
+        pagination = paginate_data(display_data, page, per_page)
     else:
-        # All executions mode (default)
-        filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
+        # All executions mode - data already paginated from SQL
         display_data = filtered_queries
-        total_count = len(filtered_queries)
-    
-    # Apply pagination
-    pagination = paginate_data(display_data, page, per_page)
+        # Create pagination object with SQL results
+        pagination = {
+            'items': filtered_queries,
+            'page': page,
+            'per_page': per_page,
+            'total': total_count,
+            'pages': (total_count + per_page - 1) // per_page,
+            'prev_num': page - 1 if page > 1 else None,
+            'next_num': page + 1 if page * per_page < total_count else None,
+            'has_prev': page > 1,
+            'has_next': page * per_page < total_count
+        }
     
     return render_template('slow_queries.html', 
                          queries=pagination['items'], 
@@ -2189,10 +2701,11 @@ def slow_queries():
                          threshold=threshold,
                          selected_plan=selected_plan,
                          view_mode=view_mode,
+                         grouping_type=grouping_type,
                          start_date=start_date_str,
                          end_date=end_date_str,
-                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
-                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
+                         min_date=format_datetime_for_input(min_date),
+                         max_date=format_datetime_for_input(max_date),
                          total_queries=total_count)
 
 @app.route('/export-slow-queries')
@@ -2200,8 +2713,8 @@ def export_slow_queries():
     # Ensure user correlation is done before filtering
     analyzer.correlate_users_with_access()
     
-    # Get available date range from log data for validation
-    min_date, max_date = analyzer.get_available_date_range()
+    # PHASE 1 OPTIMIZATION: Get available date range using SQL for validation
+    min_date, max_date = analyzer.get_available_date_range_sql()
     
     # Get filter parameters
     selected_db = request.args.get('database', 'all')
@@ -2211,62 +2724,43 @@ def export_slow_queries():
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
-    # Parse date filters
-    start_date = None
-    end_date = None
-    if start_date_str:
-        try:
-            start_date = datetime.fromisoformat(start_date_str)
-        except ValueError:
-            pass
-    if end_date_str:
-        try:
-            end_date = datetime.fromisoformat(end_date_str)
-        except ValueError:
-            pass
+    # Export limit for performance (default 10k, max 50k)
+    export_limit = min(int(request.args.get('limit', 10000)), 50000)
     
-    # Filter slow queries
-    filtered_queries = []
-    for query in analyzer.slow_queries:
-        # Duration filter
-        if query['duration'] < threshold:
-            continue
-        
-        # Database filter
-        if selected_db != 'all' and query.get('database') != selected_db:
-            continue
-            
-        # Date filters
-        if start_date and query['timestamp'] < start_date:
-            continue
-        if end_date and query['timestamp'] > end_date:
-            continue
-        
-        # Plan summary filter
-        if selected_plan != 'all':
-            query_plan = query.get('plan_summary', 'None')
-            if selected_plan == 'COLLSCAN' and query_plan != 'COLLSCAN':
-                continue
-            elif selected_plan == 'IXSCAN' and query_plan != 'IXSCAN':
-                continue
-            elif selected_plan == 'other' and query_plan in ['COLLSCAN', 'IXSCAN']:
-                continue
-            
-        filtered_queries.append(query)
+    # Parse date filters with improved handling
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
     
-    # Sort by duration (slowest first)
-    filtered_queries.sort(key=lambda x: x['duration'], reverse=True)
+    # SQL-side filtering for accurate totals and efficient fetch
+    filtered_result = analyzer.get_slow_queries_filtered(
+        threshold=threshold,
+        database=selected_db,
+        plan_summary=selected_plan,
+        start_date=start_date.isoformat() if start_date else None,
+        end_date=end_date.isoformat() if end_date else None,
+        page=1,
+        per_page=export_limit
+    )
+    filtered_queries = filtered_result.get('items', [])
+    total_matched_pre_limit = filtered_result.get('total', len(filtered_queries))
     
     # Handle export based on view mode
     if view_mode == 'unique_queries':
-        # Export unique patterns with all executions
-        unique_patterns = analyzer._group_queries_by_pattern(filtered_queries)
+        # Export unique patterns using same method as display for consistency
+        unique_patterns = analyzer.get_aggregated_patterns(
+            threshold=threshold,
+            database=selected_db,
+            plan_summary=selected_plan,
+            start_date=start_date.isoformat() if start_date else None,
+            end_date=end_date.isoformat() if end_date else None,
+            limit=export_limit
+        )
         
         export_data = {
             'export_info': {
                 'mode': 'unique_patterns',
                 'total_patterns': len(unique_patterns),
-                'total_executions': len(filtered_queries),
+                'total_executions': sum(p.get('execution_count', 0) for p in unique_patterns),
                 'exported_at': datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
                 'filters_applied': {
                     'database': selected_db,
@@ -2280,57 +2774,28 @@ def export_slow_queries():
         }
         
         for pattern in unique_patterns:
-            # Find the slowest execution for this pattern
-            slowest_execution = None
-            max_duration = pattern['max_duration']
-            for execution in pattern['executions']:
-                if execution.get('duration', 0) == max_duration:
-                    if slowest_execution is None or (execution.get('timestamp') and execution.get('timestamp') > slowest_execution.get('timestamp', datetime.min)):
-                        slowest_execution = execution
-            
-            # Get original log entry for the slowest execution only
-            slowest_original_entry = None
-            if slowest_execution:
-                original_line = analyzer.get_original_log_line(slowest_execution.get('file_path'), slowest_execution.get('line_number'))
-                if original_line:
-                    try:
-                        slowest_original_entry = json.loads(original_line)
-                    except json.JSONDecodeError:
-                        slowest_original_entry = {
-                            'timestamp': slowest_execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                            'duration_ms': slowest_execution['duration'],
-                            'database': slowest_execution['database'],
-                            'collection': slowest_execution['collection'],
-                            'query': slowest_execution['query'],
-                            'plan_summary': slowest_execution.get('plan_summary', 'None'),
-                            'note': 'Processed data - original log entry was malformed'
-                        }
-                else:
-                    slowest_original_entry = {
-                        'timestamp': slowest_execution['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                        'duration_ms': slowest_execution['duration'],
-                        'database': slowest_execution['database'],
-                        'collection': slowest_execution['collection'],
-                        'query': slowest_execution['query'],
-                        'plan_summary': slowest_execution.get('plan_summary', 'None'),
-                        'note': 'Processed data - original log entry not found'
-                    }
-            
+            # Use the aggregated pattern data directly (already has slowest query text)
             pattern_export = {
                 'pattern_summary': {
-                    'query_hash': pattern['query_hash'],
-                    'database': pattern['database'],
-                    'collection': pattern['collection'],
-                    'plan_summary': pattern['plan_summary'],
-                    'execution_count': pattern['total_count'],
-                    'avg_duration_ms': round(pattern['avg_duration'], 2),
-                    'min_duration_ms': pattern['min_duration'],
-                    'max_duration_ms': pattern['max_duration'],
-                    'first_seen': pattern['first_seen'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if pattern['first_seen'] else None,
-                    'last_seen': pattern['last_seen'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if pattern['last_seen'] else None,
-                    'sample_query': pattern['sample_query']
+                    'query_hash': pattern.get('query_hash', ''),
+                    'database': pattern.get('database', ''),
+                    'collection': pattern.get('collection', ''),
+                    'namespace': pattern.get('namespace', ''),
+                    'execution_count': pattern.get('execution_count', 0),
+                    'avg_duration_ms': round(pattern.get('avg_duration', 0), 2),
+                    'min_duration_ms': pattern.get('min_duration', 0),
+                    'max_duration_ms': pattern.get('max_duration', 0),
+                    'total_duration_ms': pattern.get('total_duration', 0),
+                    'avg_docs_examined': round(pattern.get('avg_docs_examined', 0), 2),
+                    'avg_docs_returned': round(pattern.get('avg_docs_returned', 0), 2),
+                    'avg_keys_examined': round(pattern.get('avg_keys_examined', 0), 2),
+                    'plan_summary': pattern.get('plan_summary', 'None'),
+                    'first_seen': pattern.get('first_seen').isoformat() if pattern.get('first_seen') else None,
+                    'last_seen': pattern.get('last_seen').isoformat() if pattern.get('last_seen') else None
                 },
-                'slowest_execution': slowest_original_entry
+                'slowest_query_sample': {
+                    'query_text': _clean_query_text_for_export(pattern.get('sample_query', 'N/A'))
+                }
             }
             export_data['patterns'].append(pattern_export)
         
@@ -2338,21 +2803,23 @@ def export_slow_queries():
         filename_suffix = 'unique_patterns'
         
     else:
-        # Export all executions (current behavior)
+        # Export all executions with optimized batch file I/O
+        original_log_lines = _batch_get_original_log_lines(filtered_queries)
         original_log_entries = []
-        for query in filtered_queries:
-            original_line = analyzer.get_original_log_line(query.get('file_path'), query.get('line_number'))
+        
+        for i, query in enumerate(filtered_queries):
+            original_line = original_log_lines[i]
             if original_line:
                 try:
                     original_log_entries.append(json.loads(original_line))
                 except json.JSONDecodeError:
                     original_log_entries.append({
                         'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                        'connection_id': query['connection_id'],
-                        'duration_ms': query['duration'],
-                        'database': query['database'],
-                        'collection': query['collection'],
-                        'query': query['query'],
+                        'connection_id': query.get('connection_id', None),
+                        'duration_ms': query.get('duration', 0),
+                        'database': query.get('database', ''),
+                        'collection': query.get('collection', ''),
+                        'query': query.get('query', {}),
                         'plan_summary': query.get('plan_summary', 'None'),
                         'username': query.get('username', 'Unknown'),
                         'note': 'Processed data - original log entry was malformed'
@@ -2360,10 +2827,10 @@ def export_slow_queries():
             else:
                 original_log_entries.append({
                     'timestamp': query['timestamp'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
-                    'connection_id': query['connection_id'],
-                    'duration_ms': query['duration'],
-                    'database': query['database'],
-                    'collection': query['collection'],
+                    'connection_id': query.get('connection_id', None),
+                    'duration_ms': query.get('duration', 0),
+                    'database': query.get('database', ''),
+                    'collection': query.get('collection', ''),
                     'query': query['query'],
                     'plan_summary': query.get('plan_summary', 'None'),
                     'username': query.get('username', 'Unknown'),
@@ -2377,85 +2844,221 @@ def export_slow_queries():
     db_suffix = f"_{selected_db}" if selected_db != 'all' else "_all"
     filename = f"mongodb_slow_queries_{filename_suffix}{db_suffix}_{threshold}ms_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
-    response = Response(export_content, mimetype='application/json')
+    # Use streaming response for large exports (>5MB)
+    if len(export_content) > 5 * 1024 * 1024:  # 5MB threshold
+        def generate_stream():
+            yield export_content
+        
+        response = Response(generate_stream(), mimetype='application/json')
+    else:
+        response = Response(export_content, mimetype='application/json')
+    
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    response.headers['X-Export-Count'] = str(len(filtered_queries))  # Actual exported count (post-limit)
+    response.headers['X-Export-Limit'] = str(export_limit)  # Max export limit
+    response.headers['X-Filtered-Total'] = str(total_matched_pre_limit)  # Total matched before limit applied
     
     return response
 
 @app.route('/search-logs')
 def search_logs():
-    # Get available date range from log data
-    min_date, max_date = analyzer.get_available_date_range()
+    # Get available date range (prefer SQL if DB-backed)
+    try:
+        if hasattr(analyzer, 'get_available_date_range_sql') and getattr(analyzer, 'use_database', False):
+            min_date, max_date = analyzer.get_available_date_range_sql()
+        else:
+            min_date, max_date = analyzer.get_available_date_range()
+    except Exception:
+        min_date, max_date = analyzer.get_available_date_range()
     
-    # Get search parameters
+    # Get search parameters (legacy single keyword/field kept for compatibility)
     keyword = request.args.get('keyword', '').strip()
     field_name = request.args.get('field_name', '').strip()
     field_value = request.args.get('field_value', '').strip()
-    use_regex = request.args.get('use_regex') == 'on'
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     limit = min(int(request.args.get('limit', 100)), 1000)  # Cap at 1000 results
     
-    # Parse date filters
-    start_date = None
-    end_date = None
-    if start_date_str:
-        try:
-            start_date = datetime.fromisoformat(start_date_str)
-        except ValueError:
-            pass
-    if end_date_str:
-        try:
-            end_date = datetime.fromisoformat(end_date_str)
-        except ValueError:
-            pass
+    # Parse date filters with improved handling
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
     
     # Get pagination parameters
     page, per_page = get_pagination_params(request)
     
-    # Perform search
+    # Parse chained filters early so we can trigger search without legacy fields
+    conditions = []
+    try:
+        indices = set()
+        for k in request.args.keys():
+            if k.startswith('filters['):
+                try:
+                    idx = int(k.split('[',1)[1].split(']',1)[0])
+                    indices.add(idx)
+                except Exception:
+                    pass
+        for idx in sorted(indices):
+            getv = lambda suffix, default='': request.args.get(f'filters[{idx}][{suffix}]', default)
+            ctype = getv('type')
+            if not ctype:
+                continue
+            cond = {
+                'type': ctype,
+                'name': getv('name', ''),
+                'value': getv('value', ''),
+                'regex': getv('regex') in ('on','true','1'),
+                'case_sensitive': getv('case') in ('on','true','1'),
+                'negate': getv('not') in ('on','true','1'),
+            }
+            conditions.append(cond)
+    except Exception:
+        conditions = []
+
+    # Perform search (grep-like with optional multiple conditions)
     results = []
     search_performed = False
     error_message = None
     pagination = None
-    
-    if keyword or (field_name and field_value):
+    total_found_exact = True
+    heavy_search_warning = False
+
+    # Trigger search if legacy fields are provided, or chained conditions exist, or a date window is set
+    if keyword or (field_name and field_value) or conditions or (start_date or end_date):
         search_performed = True
         try:
-            # Get more results for pagination (up to 10,000 instead of using limit)
-            search_limit = 10000 if per_page == 'all' else max(per_page * 10 if per_page != 'all' else 1000, 1000)
-            results = analyzer.search_logs(
-                keyword=keyword or None,
-                field_name=field_name or None,
-                field_value=field_value or None,
-                use_regex=use_regex,
-                start_date=start_date,
-                end_date=end_date,
-                limit=search_limit
+            per_page_value = per_page if isinstance(per_page, int) else DEFAULT_QUERY_LIMIT
+            base_search_limit = DEFAULT_QUERY_LIMIT if per_page == 'all' else max(per_page_value * 10, per_page_value, DEFAULT_PAGE_SIZE)
+            search_limit = max(1, min(limit, base_search_limit, DEFAULT_QUERY_LIMIT))
+
+            heavy_search = (
+                bool(keyword)
+                and not field_name
+                and not field_value
+                and not conditions
+                and not start_date
+                and not end_date
             )
+
+            base_kwargs = {
+                'keyword': keyword or None,
+                'field_name': field_name or None,
+                'field_value': field_value or None,
+                'start_date': start_date,
+                'end_date': end_date,
+                'limit': search_limit,
+            }
+
+            # Choose search mode: in-memory (raw) → ephemeral (small files) → streaming (grep-like)
+            use_raw_memory = bool(getattr(analyzer, 'raw_log_data', {}))
+            search_data = None
+            if use_raw_memory:
+                # Use existing in-memory search
+                try:
+                    search_data = analyzer.search_logs(conditions=conditions, **base_kwargs)
+                except TypeError:
+                    search_data = analyzer.search_logs(**base_kwargs)
+            else:
+                # Decide ephemeral threshold from env (default 200MB); fallback to streaming otherwise
+                total_bytes = int(getattr(analyzer, 'source_total_bytes', 0) or 0)
+                try:
+                    max_mb = int(os.environ.get('SEARCH_EPHEMERAL_MAX_MB', '200'))
+                except Exception:
+                    max_mb = 200
+                threshold = max_mb * 1024 * 1024
+                if total_bytes > 0 and total_bytes <= threshold:
+                    # Ephemeral local load for small data
+                    local_raw = {}
+                    for p in getattr(analyzer, 'source_log_files', []):
+                        try:
+                            with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                                local_raw[p] = [ln.rstrip('\n') for ln in f]
+                        except Exception:
+                            continue
+                    # Guard for analyzer capability
+                    if hasattr(analyzer, 'search_logs_ephemeral'):
+                        eph_results = analyzer.search_logs_ephemeral(
+                            local_raw,
+                            keyword=base_kwargs['keyword'],
+                            field_name=base_kwargs['field_name'],
+                            field_value=base_kwargs['field_value'],
+                            start_date=base_kwargs['start_date'],
+                            end_date=base_kwargs['end_date'],
+                            limit=base_kwargs['limit'],
+                            conditions=conditions
+                        )
+                        if isinstance(eph_results, dict):
+                            search_data = eph_results
+                        else:
+                            search_data = {'results': eph_results, 'total_found': len(eph_results)}
+                    else:
+                        # Fallback to in-memory search if available
+                        try:
+                            search_data = analyzer.search_logs(conditions=conditions, **base_kwargs)
+                        except TypeError:
+                            search_data = analyzer.search_logs(**base_kwargs)
+                else:
+                    # Streaming grep-like search
+                    if hasattr(analyzer, 'search_logs_streaming'):
+                        compute_total = not heavy_search
+                        if not compute_total:
+                            heavy_search_warning = True
+                        search_data = analyzer.search_logs_streaming(
+                            keyword=base_kwargs['keyword'],
+                            field_name=base_kwargs['field_name'],
+                            field_value=base_kwargs['field_value'],
+                            start_date=base_kwargs['start_date'],
+                            end_date=base_kwargs['end_date'],
+                            limit=base_kwargs['limit'],
+                            compute_total=compute_total,
+                            conditions=conditions
+                        )
+                    else:
+                        # Fallback to in-memory search if available
+                        try:
+                            search_data = analyzer.search_logs(conditions=conditions, **base_kwargs)
+                        except TypeError:
+                            search_data = analyzer.search_logs(**base_kwargs)
             
+            total_found = 0
+            # Handle both dict and list returns from search methods
+            if isinstance(search_data, dict):
+                # Optimized analyzer returns dict with 'results' key
+                results = search_data.get('results', [])
+                total_found = search_data.get('total_found', len(results))
+                if heavy_search_warning:
+                    total_found_exact = False
+            else:
+                # Non-optimized analyzer returns list directly
+                results = search_data or []
+                total_found = len(results)
+
             # Apply pagination to results
             pagination = paginate_data(results, page, per_page)
             results = pagination['items']
             
+            # Update pagination total if we have more accurate count
+            if pagination and total_found:
+                pagination['total'] = total_found
+
         except Exception as e:
             error_message = f"Search error: {str(e)}"
-    
+
     return render_template('search_logs.html',
                          keyword=keyword,
                          field_name=field_name,
                          field_value=field_value,
-                         use_regex=use_regex,
                          start_date=start_date_str,
                          end_date=end_date_str,
-                         min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
-                         max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None,
+                         min_date=format_datetime_for_input(min_date),
+                         max_date=format_datetime_for_input(max_date),
                          limit=limit,
                          results=results,
                          pagination=pagination,
                          search_performed=search_performed,
                          error_message=error_message,
-                         result_count=pagination['total'] if pagination else len(results))
+                         result_count=pagination['total'] if pagination else len(results),
+                         total_found_exact=total_found_exact,
+                         heavy_search_warning=heavy_search_warning)
 
 @app.route('/export-search-results')
 def export_search_results():
@@ -2463,50 +3066,115 @@ def export_search_results():
     keyword = request.args.get('keyword', '').strip()
     field_name = request.args.get('field_name', '').strip()
     field_value = request.args.get('field_value', '').strip()
-    use_regex = request.args.get('use_regex') == 'on'
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     limit = min(int(request.args.get('limit', 1000)), 1000)
     
-    # Parse date filters
-    start_date = None
-    end_date = None
-    if start_date_str:
-        try:
-            start_date = datetime.fromisoformat(start_date_str)
-        except ValueError:
-            pass
-    if end_date_str:
-        try:
-            end_date = datetime.fromisoformat(end_date_str)
-        except ValueError:
-            pass
+    # Parse date filters with improved handling
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
     
-    # Perform search
-    results = analyzer.search_logs(
-        keyword=keyword or None,
-        field_name=field_name or None,
-        field_value=field_value or None,
-        use_regex=use_regex,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit
-    )
+    # Parse chained filters
+    conditions = []
+    try:
+        indices = set()
+        for k in request.args.keys():
+            if k.startswith('filters['):
+                try:
+                    idx = int(k.split('[',1)[1].split(']',1)[0])
+                    indices.add(idx)
+                except Exception:
+                    pass
+        for idx in sorted(indices):
+            getv = lambda suffix, default='': request.args.get(f'filters[{idx}][{suffix}]', default)
+            ctype = getv('type')
+            if not ctype:
+                continue
+            conditions.append({
+                'type': ctype,
+                'name': getv('name',''),
+                'value': getv('value',''),
+                'regex': getv('regex') in ('on','true','1'),
+                'case_sensitive': getv('case') in ('on','true','1'),
+                'negate': getv('not') in ('on','true','1'),
+            })
+    except Exception:
+        conditions = []
+
+    # Perform search via streaming grep-like to compute accurate totals
+    if hasattr(analyzer, 'search_logs_streaming'):
+        search_data = analyzer.search_logs_streaming(
+            keyword=keyword or None,
+            field_name=field_name or None,
+            field_value=field_value or None,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            compute_total=True,
+            conditions=conditions
+        )
+    else:
+        try:
+            fallback_results = analyzer.search_logs(
+                keyword=keyword or None,
+                field_name=field_name or None,
+                field_value=field_value or None,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                conditions=conditions
+            )
+        except TypeError:
+            fallback_results = analyzer.search_logs(
+                keyword=keyword or None,
+                field_name=field_name or None,
+                field_value=field_value or None,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+
+        if isinstance(fallback_results, dict):
+            search_data = fallback_results
+        else:
+            search_data = {'results': fallback_results, 'total_found': len(fallback_results)}
+    
+    # Handle dict return from streaming search
+    results = search_data.get('results', []) if isinstance(search_data, dict) else (search_data or [])
     
     # Create export data with only original JSON entries
     original_log_entries = []
     
     for result in results:
-        if result['parsed_json']:
-            original_log_entries.append(result['parsed_json'])
-        else:
-            # If parsing failed, try to parse the raw line again
+        # Handle case where result might be a string instead of dict
+        if isinstance(result, str):
             try:
-                original_json = json.loads(result['raw_line'])
+                original_json = json.loads(result)
                 original_log_entries.append(original_json)
             except json.JSONDecodeError:
-                # Skip invalid JSON entries
+                # Skip invalid entries
                 continue
+        elif isinstance(result, dict):
+            # Try different field names based on analyzer type
+            if result.get('parsed_json'):
+                # Non-optimized analyzer format
+                original_log_entries.append(result['parsed_json'])
+            else:
+                # Try to parse from available line content
+                raw_line = (result.get('raw_line') or 
+                           result.get('line_content') or 
+                           '')
+                
+                if raw_line:
+                    try:
+                        original_json = json.loads(raw_line)
+                        original_log_entries.append(original_json)
+                    except json.JSONDecodeError:
+                        # Skip invalid JSON entries
+                        continue
+        else:
+            # Skip unexpected data types
+            continue
     
     export_content = json.dumps(original_log_entries, indent=2, default=str)
     
@@ -2516,7 +3184,15 @@ def export_search_results():
     
     response = Response(export_content, mimetype='application/json')
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
-    
+    # Pre-limit totals for validation/analytics
+    try:
+        total_found = int(search_data.get('total_found', len(results))) if isinstance(search_data, dict) else len(results)
+    except Exception:
+        total_found = len(results)
+    response.headers['X-Search-Total'] = str(total_found)
+    response.headers['X-Returned-Count'] = str(len(original_log_entries))
+    response.headers['X-Export-Limit'] = str(limit)
+
     return response
 
 @app.route('/index-suggestions')
@@ -2535,11 +3211,32 @@ def index_suggestions():
     total_docs_examined = sum(data['total_docs_examined'] for data in suggestions.values())
     avg_docs_examined = total_docs_examined / total_collscan_queries if total_collscan_queries > 0 else 0
     
+    # Build Top-by-Impact list across all collections
+    top_suggestions = []
+    for coll_name, data in suggestions.items():
+        for sug in data.get('suggestions', []):
+            entry = {
+                'collection': coll_name,
+                'impact_score': sug.get('impact_score', 0),
+                'index': sug.get('index', ''),
+                'reason': sug.get('reason', ''),
+                'confidence': sug.get('confidence', 'high'),
+                'occurrences': sug.get('occurrences', 0),
+                'avg_duration_ms': sug.get('avg_duration_ms', 0),
+                'inefficiency_ratio': sug.get('inefficiency_ratio', None),
+                'command': sug.get('command', ''),
+                'priority': sug.get('priority', 'high')
+            }
+            top_suggestions.append(entry)
+    top_suggestions.sort(key=lambda x: x.get('impact_score', 0), reverse=True)
+    top_suggestions = top_suggestions[:10]
+
     return render_template('index_suggestions.html',
                          suggestions=suggestions,
                          total_collscan_queries=total_collscan_queries,
                          total_suggestions=total_suggestions,
-                         avg_docs_examined=avg_docs_examined)
+                         avg_docs_examined=avg_docs_examined,
+                         top_suggestions=top_suggestions)
 
 @app.route('/export-index-suggestions')
 def export_index_suggestions():
@@ -2559,16 +3256,26 @@ def export_index_suggestions():
     for collection_name, data in suggestions.items():
         collection_commands = {
             'collection': collection_name,
-            'collscan_queries': data['collscan_queries'],
-            'avg_duration_ms': round(data['avg_duration']),
+            'collscan_queries': data.get('collscan_queries', 0),
+            'ixscan_ineff_queries': data.get('ixscan_ineff_queries', 0),
+            'avg_duration_ms': round(data.get('avg_duration', 0)),
+            'avg_docs_per_query': round(data.get('avg_docs_per_query', 0)),
             'commands': []
         }
         
-        for suggestion in data['suggestions']:
+        for suggestion in data.get('suggestions', []):
             collection_commands['commands'].append({
-                'priority': suggestion['priority'],
-                'reason': suggestion['reason'],
-                'command': suggestion['command']
+                'priority': suggestion.get('priority', 'medium'),
+                'reason': suggestion.get('reason', 'Index suggestion'),
+                'command': suggestion.get('command', ''),
+                'index': suggestion.get('index', ''),
+                'fields': suggestion.get('fields', []),
+                'confidence': suggestion.get('confidence', 'high'),
+                'impact_score': suggestion.get('impact_score', 0),
+                'occurrences': suggestion.get('occurrences', 0),
+                'avg_duration_ms': suggestion.get('avg_duration_ms', 0),
+                'inefficiency_ratio': suggestion.get('inefficiency_ratio', None),
+                'how_to_validate': 'Create as hidden index, run explain() to confirm usage, then unhide if beneficial.'
             })
         
         if collection_commands['commands']:  # Only include collections with suggestions
@@ -2596,27 +3303,23 @@ def slow_query_analysis():
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
     
-    # Parse date filters
-    start_date = None
-    end_date = None
-    if start_date_str:
-        try:
-            start_date = datetime.fromisoformat(start_date_str)
-        except ValueError:
-            pass
-    if end_date_str:
-        try:
-            end_date = datetime.fromisoformat(end_date_str)
-        except ValueError:
-            pass
+    # Parse date filters with improved handling
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
     
-    # Filter slow queries by date range before analysis
+    # Filter slow queries by date range and exclude system databases
     filtered_queries = []
+    
     for query in analyzer.slow_queries:
-        # Date filters
-        if start_date and query['timestamp'] < start_date:
+        # Exclude system databases from analysis
+        if is_system_database(query.get('database')):
             continue
-        if end_date and query['timestamp'] > end_date:
+            
+        # Date filters with timezone normalization
+        query_timestamp = normalize_datetime_for_comparison(query.get('timestamp'))
+        if start_date and query_timestamp and query_timestamp < start_date:
+            continue
+        if end_date and query_timestamp and query_timestamp > end_date:
             continue
         filtered_queries.append(query)
     
@@ -2650,8 +3353,11 @@ def slow_query_analysis():
     # Apply pagination
     pagination = paginate_data(patterns_list, page, per_page)
     
+    # Convert paginated items back to dict for template
+    paginated_patterns = dict(pagination['items']) if pagination['items'] else {}
+    
     return render_template('slow_query_analysis.html',
-                         patterns=dict(pagination['items']) if pagination['items'] else {},
+                         patterns=paginated_patterns,
                          pagination=pagination,
                          total_executions=total_executions,
                          avg_duration=avg_duration,
@@ -2666,8 +3372,26 @@ def export_query_analysis():
     # Ensure user correlation is done before analysis
     analyzer.correlate_users_with_access()
     
+    # Filter slow queries to exclude system databases
+    filtered_queries = []
+    excluded_databases = {'config', 'admin', '$external'}
+    
+    for query in analyzer.slow_queries:
+        # Exclude system databases from analysis
+        database = query.get('database', '').lower()
+        if database in excluded_databases:
+            continue
+        filtered_queries.append(query)
+    
+    # Temporarily replace slow_queries for analysis
+    original_queries = analyzer.slow_queries
+    analyzer.slow_queries = filtered_queries
+    
     # Analyze query patterns
     patterns = analyzer.analyze_query_patterns()
+    
+    # Restore original queries
+    analyzer.slow_queries = original_queries
     
     # Create export data
     export_data = {
@@ -2695,7 +3419,7 @@ def export_query_analysis():
                 'total_executions': pattern['total_count'],
                 'avg_duration_ms': round(pattern['avg_duration']),
                 'min_duration_ms': round(pattern['min_duration']),
-                'max_duration_ms': round(pattern['max_duration']),
+                'max_duration_ms': round(pattern.get('max_duration', 0)),
                 'median_duration_ms': round(pattern['median_duration'])
             },
             'efficiency_metrics': {
@@ -2752,8 +3476,25 @@ def current_op_analyzer():
                 flash('Please paste the db.currentOp() output or upload a file containing the output.', 'error')
                 return render_template('current_op_analyzer.html')
             
-            # Parse and analyze the currentOp data
-            analysis = analyze_current_op(current_op_data)
+            # Parse filter inputs
+            try:
+                threshold = int(request.form.get('threshold', 30) or 30)
+            except Exception:
+                threshold = 30
+            only_active = request.form.get('only_active') == 'on'
+            only_waiting = request.form.get('only_waiting') == 'on'
+            only_collscan = request.form.get('only_collscan') == 'on'
+
+            # Parse and analyze the currentOp data with filters
+            analysis = analyze_current_op(
+                current_op_data,
+                threshold=threshold,
+                filters={
+                    'only_active': only_active,
+                    'only_waiting': only_waiting,
+                    'only_collscan': only_collscan,
+                }
+            )
             
             return render_template('current_op_analyzer.html', 
                                  analysis=analysis, 
@@ -2765,7 +3506,7 @@ def current_op_analyzer():
     
     return render_template('current_op_analyzer.html')
 
-def analyze_current_op(current_op_data):
+def analyze_current_op(current_op_data, threshold: int = 30, filters: dict | None = None):
     """Analyze db.currentOp() output and provide insights"""
     try:
         # Parse JSON data
@@ -2817,6 +3558,14 @@ def analyze_current_op(current_op_data):
                 'max_duration': 0,
                 'min_duration': float('inf'),
                 'total_duration': 0
+            },
+            # Compact resource-centric view per op, shown prominently in UI
+            'ops_brief': [],
+            'filters': {
+                'threshold': threshold,
+                'only_active': bool(filters.get('only_active') if filters else False),
+                'only_waiting': bool(filters.get('only_waiting') if filters else False),
+                'only_collscan': bool(filters.get('only_collscan') if filters else False),
             }
         }
         
@@ -2858,8 +3607,8 @@ def analyze_current_op(current_op_data):
                     analysis['performance_metrics']['min_duration'], duration
                 )
                 
-                # Long running operations (>30 seconds)
-                if duration > 30:
+                # Long running operations (> threshold seconds)
+                if duration > (threshold or 30):
                     analysis['long_running_ops'].append({
                         'opid': op.get('opid'),
                         'op': op_type,
@@ -2890,12 +3639,52 @@ def analyze_current_op(current_op_data):
                             'type': lock_type,
                             'ns': op.get('ns', 'unknown')
                         })
-                    elif lock_mode in ['W', 'w', 'X']:
-                        analysis['lock_analysis']['write_locks'].append({
-                            'opid': op.get('opid'),
-                            'type': lock_type,
-                            'ns': op.get('ns', 'unknown')
-                        })
+                elif lock_mode in ['W', 'w', 'X']:
+                    analysis['lock_analysis']['write_locks'].append({
+                        'opid': op.get('opid'),
+                        'type': lock_type,
+                        'ns': op.get('ns', 'unknown')
+                    })
+
+            # Compact OS/resource view per op (best-effort)
+            try:
+                cpu_s = 0.0
+                if isinstance(op.get('microsecs_running'), (int, float)):
+                    cpu_s = float(op['microsecs_running']) / 1_000_000.0
+                elif isinstance(op.get('secs_running'), (int, float)):
+                    cpu_s = float(op['secs_running'])
+
+                bytes_read = op.get('bytesRead') or op.get('bytes_read')
+                if bytes_read is None and isinstance(op.get('network'), dict):
+                    bytes_read = op['network'].get('bytesRead')
+                bytes_written = op.get('bytesWritten') or op.get('bytes_written')
+                if bytes_written is None and isinstance(op.get('network'), dict):
+                    bytes_written = op['network'].get('bytesWritten')
+
+                mem_mb = None
+                mem = op.get('memory') or {}
+                if isinstance(mem, dict):
+                    mem_mb = mem.get('residentMb') or mem.get('residentMB') or mem.get('workingSetMb')
+                if mem_mb is None:
+                    ws = op.get('workingSet') or op.get('resident')
+                    if isinstance(ws, (int, float)):
+                        mem_mb = round(float(ws) / (1024*1024), 2)
+
+                analysis['ops_brief'].append({
+                    'opid': op.get('opid'),
+                    'ns': op.get('ns'),
+                    'op': op.get('op'),
+                    'client': op.get('client') or op.get('conn'),
+                    'active': bool(op.get('active')),
+                    'waitingForLock': bool(op.get('waitingForLock')),
+                    'planSummary': op.get('planSummary') or 'None',
+                    'cpuTime_s': round(cpu_s, 3),
+                    'bytesRead': bytes_read if isinstance(bytes_read, (int, float)) else None,
+                    'bytesWritten': bytes_written if isinstance(bytes_written, (int, float)) else None,
+                    'memoryMb': mem_mb,
+                })
+            except Exception:
+                pass
             
             # Collection and database hotspots
             ns = op.get('ns', '')
@@ -2951,6 +3740,13 @@ def analyze_current_op(current_op_data):
                     'operations': ops
                 })
         
+        # Sort compact ops by cpu time (desc) and cap list for UI
+        try:
+            analysis['ops_brief'].sort(key=lambda x: (x.get('cpuTime_s') or 0.0), reverse=True)
+            analysis['ops_brief'] = analysis['ops_brief'][:50]
+        except Exception:
+            pass
+
         # Generate recommendations
         analysis['recommendations'] = _generate_current_op_recommendations(analysis)
         
@@ -3143,1232 +3939,473 @@ def _generate_current_op_recommendations(analysis):
     return recommendations
 
 
-# Enhanced Index Recommendation Engine - Independent Implementation
-class EnhancedIndexAnalyzer:
-    """Advanced index recommendation engine with intelligent query parsing and performance impact analysis"""
+
+
+@app.route('/workload-summary')
+def workload_summary():
+    """OS Resource-centric workload analysis with real storage and CPU metrics from database"""
+    # Get comprehensive OS resource workload data using actual database metrics
+    workload_data = analyzer.get_os_resource_workload_summary()
     
-    def __init__(self, slow_queries):
-        # Helper function to safely convert values to integers
-        self._safe_int = lambda x: int(x) if isinstance(x, (int, float)) or (isinstance(x, str) and x.isdigit()) else 0
-        # Handle both mongo_analyzer objects and direct slow_queries lists
-        if hasattr(slow_queries, 'slow_queries'):
-            self.slow_queries = slow_queries.slow_queries
-        else:
-            self.slow_queries = slow_queries
-        self.recommendations = []
-        
-    def analyze_queries_advanced(self):
-        """Main entry point for enhanced index analysis"""
-        if not self.slow_queries:
-            return []
-            
-        # Group queries by pattern for comprehensive analysis
-        query_patterns = self._group_by_enhanced_pattern()
-        
-        # Generate smart recommendations
-        recommendations = []
-        for pattern_key, pattern_data in query_patterns.items():
-            pattern_recommendations = self._analyze_pattern_advanced(pattern_data)
-            recommendations.extend(pattern_recommendations)
-        
-        # Remove duplicates and prioritize
-        recommendations = self._deduplicate_recommendations(recommendations)
-        recommendations = self._prioritize_by_impact(recommendations)
-        
-        return recommendations
+    # Prepare data for template with proper field mapping
+    top_docs = []  # Using docs_examined from old analyze_query_patterns for backward compatibility
+    top_keys = []  # Using keys_examined from old analyze_query_patterns for backward compatibility 
     
-    def _group_by_enhanced_pattern(self):
-        """Group queries by enhanced patterns considering structure and performance"""
-        patterns = {}
+    # Get docs/keys data for backward compatibility (these use existing analysis method)
+    try:
+        patterns = analyzer.analyze_query_patterns()
+        entries = []
+        for key, pat in patterns.items():
+            docs = int(pat.get('total_docs_examined', 0) or 0)
+            keys = int(pat.get('total_keys_examined', 0) or 0)
+            if docs > 0 or keys > 0:
+                entries.append({
+                    'database': pat.get('database', 'unknown'),
+                    'collection': pat.get('collection', 'unknown'),
+                    'plan_summary': pat.get('plan_summary', 'None'),
+                    'total_count': pat.get('total_count', 0),
+                    'avg_duration': int(pat.get('avg_duration', 0) or 0),
+                    'docs_examined': docs,
+                    'keys_examined': keys
+                })
         
-        for query in self.slow_queries:
-            # Create enhanced pattern key
-            pattern_key = self._create_enhanced_pattern_key(query)
-            
-            if pattern_key not in patterns:
-                patterns[pattern_key] = {
-                    'queries': [],
-                    'total_executions': 0,
-                    'total_duration': 0,
-                    'total_docs_examined': 0,
-                    'total_returned': 0,
-                    'database': query.get('database', 'unknown'),
-                    'collection': query.get('collection', 'unknown'),
-                    'query_structure': self._extract_query_structure(query),
-                    'plan_summary': query.get('plan_summary', 'None')
-                }
-            
-            pattern = patterns[pattern_key]
-            pattern['queries'].append(query)
-            pattern['total_executions'] += 1
-            pattern['total_duration'] += self._safe_int(query.get('duration', 0))
-            pattern['total_docs_examined'] += self._safe_int(query.get('docsExamined', 0))
-            pattern['total_returned'] += self._safe_int(query.get('nReturned', 0))
-        
-        return patterns
+        # Get top docs/keys examined for compatibility
+        top_docs = sorted([e for e in entries if e['docs_examined'] > 0], 
+                         key=lambda e: e['docs_examined'], reverse=True)[:10]
+        top_keys = sorted([e for e in entries if e['keys_examined'] > 0], 
+                         key=lambda e: e['keys_examined'], reverse=True)[:10]
+    except Exception as e:
+        print(f"⚠️  Error getting docs/keys data: {e}")
+
+    return render_template('workload_summary.html',
+                           # Legacy fields for template compatibility
+                           top_docs=top_docs,
+                           top_keys=top_keys,
+                           # Real OS resource data from database
+                           top_bytes=workload_data['top_bytes_read'],
+                           top_cpu=workload_data['top_cpu_usage'],
+                           top_mem=workload_data['top_bytes_written'],  # Use bytes_written for "memory" section
+                           # Additional new data
+                           top_io_time=workload_data['top_io_time'],
+                           workload_stats=workload_data['stats'])
+
+@app.route('/search-user-access')
+def search_user_access():
+    """Search User Access page with authentication table integration"""
+    if not analyzer:
+        flash('Please upload a log file first.', 'warning')
+        return redirect(url_for('index'))
     
-    def _create_enhanced_pattern_key(self, query):
-        """Create intelligent pattern key for better grouping"""
-        database = query.get('database', 'unknown')
-        collection = query.get('collection', 'unknown')
-        
-        # Parse query structure
-        query_text = query.get('query', '{}')
-        try:
-            query_obj = json.loads(query_text)
-            structure_hash = self._hash_query_structure(query_obj)
-        except:
-            structure_hash = hash(query_text)
-        
-        return f"{database}.{collection}_{abs(structure_hash)}"
+    # Get filter parameters
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    filter_type = request.args.get('filter_type', '').strip()
+    filter_value = request.args.get('filter_value', '').strip()
+    use_regex = request.args.get('use_regex') == 'on'
     
-    def _hash_query_structure(self, query_obj):
-        """Create hash based on query structure, not values"""
-        def normalize_structure(obj):
-            if isinstance(obj, dict):
-                normalized = {}
-                for key, value in obj.items():
-                    if key.startswith('$'):
-                        normalized[key] = normalize_structure(value)
-                    else:
-                        normalized[key] = type(value).__name__
-                return normalized
-            elif isinstance(obj, list):
-                return [normalize_structure(item) for item in obj[:3]]  # Limit list size
-            else:
-                return type(obj).__name__
+    # Map combined filter to individual parameters
+    ip_filter = filter_value if filter_type == 'ip_address' else ''
+    username_filter = filter_value if filter_type == 'username' else ''
+    mechanism_filter = filter_value if filter_type == 'mechanism' else ''
+    auth_status_filter = filter_value if filter_type == 'auth_status' else ''
+    
+    # Get pagination parameters
+    page, per_page = get_pagination_params(request)
+    
+    # Parse date filters
+    parsed_start = parse_date_filter(start_date) if start_date else None
+    parsed_end = parse_date_filter(end_date, is_end_date=True) if end_date else None
+    
+    try:
+        # Get authentication data directly from database
+        user_access_data = analyzer.get_authentication_data(
+            start_date=parsed_start,
+            end_date=parsed_end,
+            ip_filter=ip_filter,
+            username_filter=username_filter,
+            mechanism_filter=mechanism_filter,
+            auth_status_filter=auth_status_filter,
+            use_regex=use_regex,
+            page=page,
+            per_page=per_page
+        )
         
-        normalized = normalize_structure(query_obj)
-        return hash(json.dumps(normalized, sort_keys=True))
-    
-    def _extract_query_structure(self, query):
-        """Extract and parse query structure for analysis"""
-        query_text = query.get('query', '{}')
-        try:
-            query_obj = json.loads(query_text)
-            return self._parse_query_structure(query_obj)
-        except:
-            return {'type': 'unknown', 'fields': [], 'operations': []}
-    
-    def _parse_query_structure(self, query_obj):
-        """Intelligently parse query structure"""
-        structure = {
-            'type': 'unknown',
-            'fields': [],
-            'operations': [],
-            'sort_fields': [],
-            'projected_fields': [],
-            'aggregation_stages': []
+        # Get available dropdown options from authentication table
+        available_mechanisms = analyzer.get_available_mechanisms_from_auth()
+        available_ips = analyzer.get_available_ips_from_auth()
+        available_users = analyzer.get_available_users_from_auth()
+        available_auth_statuses = analyzer.get_available_auth_statuses()
+        
+        return render_template('search_user_access.html',
+                             user_access_data=user_access_data,
+                             available_mechanisms=sorted(available_mechanisms),
+                             available_ips=sorted(available_ips),
+                             available_users=sorted(available_users),
+                             available_auth_statuses=sorted(available_auth_statuses),
+                             filters={
+                                 'start_date': start_date,
+                                 'end_date': end_date,
+                                 'filter_type': filter_type,
+                                 'filter_value': filter_value,
+                                 'use_regex': use_regex,
+                                 # Keep legacy for template compatibility
+                                 'ip_address': ip_filter,
+                                 'username': username_filter,
+                                 'mechanism': mechanism_filter,
+                                 'auth_status': auth_status_filter
+                             })
+        
+    except ValueError as e:
+        # Handle regex validation errors specifically
+        flash(f'Invalid regex pattern: {str(e)}', 'error')
+        # Return to empty state with available options
+        user_access_data = {
+            'items': [],
+            'page': 1,
+            'per_page': per_page,
+            'total': 0,
+            'pages': 0,
+            'has_prev': False,
+            'has_next': False,
+            'prev_num': None,
+            'next_num': None
         }
         
-        if 'find' in query_obj:
-            structure['type'] = 'find'
-            filter_obj = query_obj.get('filter', {})
-            structure['fields'].extend(self._extract_filter_fields(filter_obj))
-            
-            sort_obj = query_obj.get('sort', {})
-            if sort_obj:
-                structure['sort_fields'] = list(sort_obj.keys())
+        # Get available dropdown options from authentication table
+        available_mechanisms = analyzer.get_available_mechanisms_from_auth()
+        available_ips = analyzer.get_available_ips_from_auth()
+        available_users = analyzer.get_available_users_from_auth()
+        available_auth_statuses = analyzer.get_available_auth_statuses()
+        
+        return render_template('search_user_access.html',
+                             user_access_data=user_access_data,
+                             available_mechanisms=sorted(available_mechanisms),
+                             available_ips=sorted(available_ips),
+                             available_users=sorted(available_users),
+                             available_auth_statuses=sorted(available_auth_statuses),
+                             filters={
+                                 'start_date': start_date,
+                                 'end_date': end_date,
+                                 'filter_type': filter_type,
+                                 'filter_value': filter_value,
+                                 'use_regex': use_regex,
+                                 # Keep legacy for template compatibility
+                                 'ip_address': ip_filter,
+                                 'username': username_filter,
+                                 'mechanism': mechanism_filter,
+                                 'auth_status': auth_status_filter
+                             })
+        
+    except Exception as e:
+        flash(f'Error retrieving user access data: {str(e)}', 'error')
+        # Return empty pagination structure for error case
+        empty_pagination_dict = {
+            'items': [],
+            'page': 1,
+            'per_page': per_page,
+            'total': 0,
+            'pages': 0,
+            'has_prev': False,
+            'has_next': False,
+            'prev_num': None,
+            'next_num': None
+        }
+        
+        return render_template('search_user_access.html',
+                             user_access_data=empty_pagination_dict,
+                             available_mechanisms=[],
+                             available_ips=[],
+                             available_users=[],
+                             available_auth_statuses=[],
+                             filters={
+                                 'start_date': start_date,
+                                 'end_date': end_date,
+                                 'filter_type': filter_type,
+                                 'filter_value': filter_value,
+                                 'ip_address': ip_filter,
+                                 'username': username_filter,
+                                 'mechanism': mechanism_filter,
+                                 'auth_status': auth_status_filter
+                             })
+
+@app.route('/query-trend')
+def query_trend():
+    """Enhanced Query Trend page with scatter plot and top queries table"""
+    if not analyzer:
+        flash('Please upload a log file first.', 'warning')
+        return redirect(url_for('index'))
+    
+    # Get filter parameters
+    grouping_type = request.args.get('groupingType', 'pattern_key')
+    selected_db = request.args.get('database', 'all')
+    selected_namespace = request.args.get('namespace', 'all')
+    
+    try:
+        # Always use the original method that provides individual execution data
+        # needed for scatter plot, but apply grouping logic for filtering/display
+        patterns = analyzer.analyze_query_patterns()
+        
+        # Apply database and namespace filtering
+        if selected_db != 'all' or selected_namespace != 'all':
+            filtered_patterns = {}
+            for pattern_key, pattern_data in patterns.items():
+                database = pattern_data.get('database', '')
+                collection = pattern_data.get('collection', '')
+                namespace = f"{database}.{collection}"
                 
-            projection = query_obj.get('projection', {})
-            if projection:
-                structure['projected_fields'] = list(projection.keys())
-                
-        elif 'aggregate' in query_obj:
-            structure['type'] = 'aggregate'
-            pipeline = query_obj.get('pipeline', [])
-            
-            for stage in pipeline:
-                if '$match' in stage:
-                    match_fields = self._extract_filter_fields(stage['$match'])
-                    structure['fields'].extend(match_fields)
-                    structure['aggregation_stages'].append('$match')
-                elif '$sort' in stage:
-                    structure['sort_fields'].extend(list(stage['$sort'].keys()))
-                    structure['aggregation_stages'].append('$sort')
-                elif '$group' in stage:
-                    group_obj = stage['$group']
-                    if '_id' in group_obj:
-                        if isinstance(group_obj['_id'], str) and group_obj['_id'].startswith('$'):
-                            structure['fields'].append(group_obj['_id'][1:])  # Remove $
-                        elif isinstance(group_obj['_id'], dict):
-                            for key, value in group_obj['_id'].items():
-                                if isinstance(value, str) and value.startswith('$'):
-                                    structure['fields'].append(value[1:])
-                    structure['aggregation_stages'].append('$group')
-                else:
-                    for stage_name in stage.keys():
-                        if stage_name not in structure['aggregation_stages']:
-                            structure['aggregation_stages'].append(stage_name)
-        
-        return structure
-    
-    def _extract_filter_fields(self, filter_obj, path=""):
-        """Recursively extract fields from complex filter conditions"""
-        fields = []
-        
-        if not isinstance(filter_obj, dict):
-            return fields
-        
-        for key, value in filter_obj.items():
-            current_path = f"{path}.{key}" if path else key
-            
-            if key == '$and':
-                if isinstance(value, list):
-                    for condition in value:
-                        fields.extend(self._extract_filter_fields(condition, path))
-            elif key == '$or':
-                if isinstance(value, list):
-                    for condition in value:
-                        fields.extend(self._extract_filter_fields(condition, path))
-            elif key == '$nor':
-                if isinstance(value, list):
-                    for condition in value:
-                        fields.extend(self._extract_filter_fields(condition, path))
-            elif key.startswith('$'):
-                # Skip other operators
-                continue
-            else:
-                fields.append(current_path)
-                
-                # Handle nested conditions
-                if isinstance(value, dict):
-                    for sub_key, sub_value in value.items():
-                        if sub_key.startswith('$'):
-                            # Field has operator like {field: {$gt: 10}}
-                            continue
-                        else:
-                            # Nested object field
-                            fields.extend(self._extract_filter_fields({sub_key: sub_value}, current_path))
-        
-        return fields
-    
-    def _analyze_pattern_advanced(self, pattern_data):
-        """Generate intelligent recommendations for a query pattern"""
-        recommendations = []
-        structure = pattern_data['query_structure']
-        
-        # Calculate performance metrics
-        avg_duration = pattern_data['total_duration'] / pattern_data['total_executions']
-        
-        if pattern_data['total_docs_examined'] > 0:
-            selectivity = (pattern_data['total_returned'] / pattern_data['total_docs_examined']) * 100
-        else:
-            selectivity = 0
-            
-        # Determine urgency based on performance
-        if pattern_data['plan_summary'] == 'COLLSCAN':
-            urgency = 'critical'
-            performance_impact = 'high'
-        elif selectivity < 1.0:
-            urgency = 'high'
-            performance_impact = 'high'
-        elif avg_duration > 1000:
-            urgency = 'medium'
-            performance_impact = 'medium'
-        else:
-            urgency = 'low'
-            performance_impact = 'low'
-        
-        # Generate field-specific recommendations
-        if structure['fields']:
-            recommendations.extend(
-                self._generate_field_recommendations(
-                    pattern_data, structure['fields'], urgency, performance_impact
-                )
-            )
-        
-        # Generate sort recommendations
-        if structure['sort_fields']:
-            recommendations.extend(
-                self._generate_sort_recommendations(
-                    pattern_data, structure['sort_fields'], urgency, performance_impact
-                )
-            )
-        
-        # Generate compound index recommendations
-        if structure['fields'] and structure['sort_fields']:
-            recommendations.extend(
-                self._generate_compound_recommendations(
-                    pattern_data, structure['fields'], structure['sort_fields'], urgency, performance_impact
-                )
-            )
-        
-        # Generate aggregation-specific recommendations
-        if structure['type'] == 'aggregate':
-            recommendations.extend(
-                self._generate_aggregation_recommendations(
-                    pattern_data, structure, urgency, performance_impact
-                )
-            )
-        
-        return recommendations
-    
-    def _generate_field_recommendations(self, pattern_data, fields, urgency, performance_impact):
-        """Generate single field index recommendations"""
-        recommendations = []
-        
-        for field in fields[:5]:  # Limit to top 5 fields to avoid spam
-            estimated_improvement = self._estimate_performance_improvement(
-                pattern_data, 'single_field', [field]
-            )
-            
-            recommendations.append({
-                'type': 'single_field_index',
-                'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
-                'index_definition': {field: 1},
-                'command': f"db.{pattern_data['collection']}.createIndex({{{field}: 1}})",
-                'reason': f"Filter condition on '{field}'",
-                'urgency': urgency,
-                'performance_impact': performance_impact,
-                'estimated_improvement': estimated_improvement,
-                'affected_queries': pattern_data['total_executions'],
-                'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
-                'selectivity': (pattern_data['total_returned'] / max(pattern_data['total_docs_examined'], 1)) * 100,
-                'docs_examined_avg': pattern_data['total_docs_examined'] / pattern_data['total_executions']
-            })
-        
-        return recommendations
-    
-    def _generate_sort_recommendations(self, pattern_data, sort_fields, urgency, performance_impact):
-        """Generate sort index recommendations"""
-        recommendations = []
-        
-        # Single field sort indexes
-        for field in sort_fields[:3]:
-            estimated_improvement = self._estimate_performance_improvement(
-                pattern_data, 'sort', [field]
-            )
-            
-            recommendations.append({
-                'type': 'sort_index',
-                'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
-                'index_definition': {field: -1},  # Assume descending for recency
-                'command': f"db.{pattern_data['collection']}.createIndex({{{field}: -1}})",
-                'reason': f"Sort optimization for '{field}'",
-                'urgency': urgency,
-                'performance_impact': performance_impact,
-                'estimated_improvement': estimated_improvement,
-                'affected_queries': pattern_data['total_executions'],
-                'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
-                'benefit': 'Eliminates in-memory sorting'
-            })
-        
-        return recommendations
-    
-    def _generate_compound_recommendations(self, pattern_data, filter_fields, sort_fields, urgency, performance_impact):
-        """Generate intelligent compound index recommendations"""
-        recommendations = []
-        
-        # Generate optimal compound indexes (filter fields first, then sort)
-        for filter_field in filter_fields[:2]:
-            for sort_field in sort_fields[:2]:
-                if filter_field != sort_field:
-                    estimated_improvement = self._estimate_performance_improvement(
-                        pattern_data, 'compound', [filter_field, sort_field]
-                    )
+                # Apply database filter
+                if selected_db != 'all' and database != selected_db:
+                    continue
                     
-                    recommendations.append({
-                        'type': 'compound_index',
-                        'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
-                        'index_definition': {filter_field: 1, sort_field: -1},
-                        'command': f"db.{pattern_data['collection']}.createIndex({{{filter_field}: 1, {sort_field}: -1}})",
-                        'reason': f"Optimal compound index for filter on '{filter_field}' and sort by '{sort_field}'",
-                        'urgency': urgency,
-                        'performance_impact': performance_impact,
-                        'estimated_improvement': estimated_improvement,
-                        'affected_queries': pattern_data['total_executions'],
-                        'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
-                        'benefit': 'Combines filtering and sorting in single index traversal'
+                # Apply namespace filter
+                if selected_namespace != 'all' and namespace != selected_namespace:
+                    continue
+                    
+                filtered_patterns[pattern_key] = pattern_data
+            patterns = filtered_patterns
+        
+        # Apply grouping logic to modify pattern keys for display grouping
+        if grouping_type != 'pattern_key':
+            grouped_patterns = {}
+            for pattern_key, pattern_data in patterns.items():
+                if grouping_type == 'namespace':
+                    # Group by namespace only
+                    group_key = f"{pattern_data.get('database', 'unknown')}.{pattern_data.get('collection', 'unknown')}"
+                elif grouping_type == 'query_hash':
+                    # Group by query hash only
+                    group_key = pattern_data.get('query_hash', 'unknown')
+                else:
+                    group_key = pattern_key
+                
+                if group_key not in grouped_patterns:
+                    grouped_patterns[group_key] = pattern_data.copy()
+                else:
+                    # Merge executions from multiple patterns into one group
+                    existing = grouped_patterns[group_key]
+                    existing['executions'].extend(pattern_data.get('executions', []))
+                    existing['total_count'] += pattern_data.get('total_count', 0)
+                    
+                    # Update aggregated metrics
+                    all_durations = [exec.get('duration', 0) for exec in existing['executions']]
+                    if all_durations:
+                        existing['avg_duration'] = sum(all_durations) / len(all_durations)
+                        existing['min_duration'] = min(all_durations)
+                        existing['max_duration'] = max(all_durations)
+            
+            patterns = grouped_patterns
+        
+        # Prepare enhanced data for scatter plot and table
+        trend_data = []
+        top_queries_data = []
+        query_details = {}  # For modal popups
+        
+        def format_duration_time(total_ms):
+            """Convert milliseconds to human-readable format"""
+            total_seconds = total_ms / 1000
+            if total_seconds < 60:
+                return f"{total_seconds:.1f}s"
+            elif total_seconds < 3600:
+                minutes = total_seconds / 60
+                return f"{minutes:.1f}m"
+            else:
+                hours = total_seconds / 3600
+                return f"{hours:.1f}h"
+        
+        def format_duration_detailed(ms_value):
+            """Convert milliseconds to human-readable format with raw value"""
+            if ms_value < 1000:
+                return {
+                    'formatted': f"{ms_value:.0f}ms",
+                    'raw': f"{ms_value:.0f}ms"
+                }
+            elif ms_value < 60000:  # Less than 1 minute
+                seconds = ms_value / 1000
+                return {
+                    'formatted': f"{seconds:.1f}s",
+                    'raw': f"{ms_value:,.0f}ms"
+                }
+            elif ms_value < 3600000:  # Less than 1 hour
+                minutes = ms_value / 60000
+                return {
+                    'formatted': f"{minutes:.1f}m",
+                    'raw': f"{ms_value:,.0f}ms"
+                }
+            else:  # 1 hour or more
+                hours = ms_value / 3600000
+                return {
+                    'formatted': f"{hours:.1f}h",
+                    'raw': f"{ms_value:,.0f}ms"
+                }
+        
+        def extract_operation_type(query_str):
+            """Extract operation type from query string"""
+            try:
+                if not query_str:
+                    return 'unknown'
+
+                query_obj = json.loads(query_str)
+                if isinstance(query_obj, dict):
+                    # Check for findAndModify first (maps to update semantically)
+                    if 'findAndModify' in query_obj:
+                        return 'update'
+
+                    # Check for other operations
+                    operations = ['find', 'aggregate', 'update', 'insert', 'delete', 'count', 'distinct', 'createIndexes']
+                    for op in operations:
+                        if op in query_obj:
+                            return op
+                return 'other'
+            except:
+                return 'unknown'
+        
+        # Process each pattern for both scatter plot and table
+        for pattern_key, pattern_data in patterns.items():
+            executions = pattern_data.get('executions', [])
+            
+            if not executions:
+                continue
+            
+            # Calculate aggregated statistics for table
+            durations = [e.get('duration', 0) for e in executions]
+            total_duration = sum(durations)
+            avg_duration = total_duration / len(durations) if durations else 0
+            max_duration = max(durations) if durations else 0
+            
+            # Get pattern details
+            first_execution = executions[0]
+            database = first_execution.get('database', 'unknown')
+            collection = first_execution.get('collection', 'unknown')
+            namespace = f"{database}.{collection}"
+            
+            # Extract operation type from sample query
+            sample_query = pattern_data.get('sample_query', '')
+            operation_type = extract_operation_type(sample_query)
+            
+            # Format durations for display
+            mean_duration_formatted = format_duration_detailed(avg_duration)
+            max_duration_formatted = format_duration_detailed(max_duration)
+            
+            # Prepare table row data
+            top_queries_data.append({
+                'namespace': namespace,
+                'operation': operation_type,
+                'execution_count': len(executions),
+                'mean_duration': avg_duration,
+                'mean_duration_formatted': mean_duration_formatted['formatted'],
+                'mean_duration_raw': mean_duration_formatted['raw'],
+                'max_duration': max_duration,
+                'max_duration_formatted': max_duration_formatted['formatted'],
+                'max_duration_raw': max_duration_formatted['raw'],
+                'sum_duration': total_duration,
+                'sum_duration_formatted': format_duration_time(total_duration),
+                'query_hash': pattern_data.get('query_hash', 'unknown'),
+                'pattern_key': pattern_key,
+                'sample_query': sample_query
+            })
+            
+            # Store query details for modal
+            query_details[pattern_data.get('query_hash', 'unknown')] = {
+                'namespace': namespace,
+                'operation_type': operation_type,
+                'avg_duration': avg_duration,
+                'execution_count': len(executions),
+                'sample_query': sample_query,
+                'pattern_key': pattern_key,
+                'executions': executions[:10]  # Limit to first 10 for modal
+            }
+            
+            # Prepare scatter plot data
+            for execution in executions:
+                timestamp = execution.get('timestamp')
+                duration = execution.get('duration', 0)
+                query_hash = pattern_data.get('query_hash', 'unknown')
+                
+                if timestamp and duration:
+                    # Format timestamp for JavaScript
+                    if hasattr(timestamp, 'isoformat'):
+                        timestamp_str = timestamp.isoformat()
+                    elif isinstance(timestamp, str):
+                        timestamp_str = timestamp
+                    else:
+                        timestamp_str = str(timestamp)
+                    
+                    trend_data.append({
+                        'timestamp': timestamp_str,
+                        'duration': duration,
+                        'query_hash': query_hash,
+                        'database': database,
+                        'collection': collection,
+                        'namespace': namespace,
+                        'operation': operation_type,
+                        'pattern_key': pattern_key,
+                        'avg_duration': avg_duration
                     })
         
-        return recommendations
-    
-    def _generate_aggregation_recommendations(self, pattern_data, structure, urgency, performance_impact):
-        """Generate aggregation-specific recommendations"""
-        recommendations = []
+        # Sort table data by sum duration (highest first)
+        top_queries_data.sort(key=lambda x: x['sum_duration'], reverse=True)
         
-        # Early $match stage optimization
-        if '$match' in structure['aggregation_stages'] and structure['fields']:
-            for field in structure['fields'][:3]:
-                estimated_improvement = self._estimate_performance_improvement(
-                    pattern_data, 'aggregation_match', [field]
-                )
-                
-                recommendations.append({
-                    'type': 'aggregation_index',
-                    'collection': f"{pattern_data['database']}.{pattern_data['collection']}",
-                    'index_definition': {field: 1},
-                    'command': f"db.{pattern_data['collection']}.createIndex({{{field}: 1}})",
-                    'reason': f"Optimize $match stage filtering on '{field}'",
-                    'urgency': urgency,
-                    'performance_impact': performance_impact,
-                    'estimated_improvement': estimated_improvement,
-                    'affected_queries': pattern_data['total_executions'],
-                    'current_avg_duration': pattern_data['total_duration'] / pattern_data['total_executions'],
-                    'benefit': 'Reduces documents processed in aggregation pipeline'
-                })
+        # Sort scatter plot data by timestamp
+        trend_data.sort(key=lambda x: x['timestamp'])
         
-        return recommendations
-    
-    def _estimate_performance_improvement(self, pattern_data, recommendation_type, fields):
-        """Estimate potential performance improvement"""
-        current_selectivity = (pattern_data['total_returned'] / max(pattern_data['total_docs_examined'], 1)) * 100
+        # Limit data points for performance (take every nth point if too many)
+        max_points = 2000
+        if len(trend_data) > max_points:
+            step = len(trend_data) // max_points
+            trend_data = trend_data[::step]
         
-        if pattern_data['plan_summary'] == 'COLLSCAN':
-            if recommendation_type == 'single_field':
-                return f"50-90% faster (eliminate collection scan)"
-            elif recommendation_type == 'compound':
-                return f"70-95% faster (optimal index usage)"
-            elif recommendation_type == 'sort':
-                return f"40-80% faster (eliminate in-memory sort)"
-            else:
-                return f"30-70% faster"
-        elif current_selectivity < 1.0:
-            return f"30-60% faster (improve selectivity from {current_selectivity:.2f}%)"
-        elif current_selectivity < 10.0:
-            return f"15-40% faster (improve selectivity from {current_selectivity:.2f}%)"
-        else:
-            return f"5-20% faster (minor optimization)"
-    
-    def _deduplicate_recommendations(self, recommendations):
-        """Remove duplicate recommendations"""
-        seen = set()
-        unique_recommendations = []
-        
-        for rec in recommendations:
-            # Create key based on collection and index definition
-            key = f"{rec['collection']}_{json.dumps(rec['index_definition'], sort_keys=True)}"
-            
-            if key not in seen:
-                seen.add(key)
-                unique_recommendations.append(rec)
-        
-        return unique_recommendations
-    
-    def _prioritize_by_impact(self, recommendations):
-        """Sort recommendations by potential impact"""
-        def impact_score(rec):
-            urgency_scores = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
-            performance_scores = {'high': 3, 'medium': 2, 'low': 1}
-            
-            urgency_score = urgency_scores.get(rec['urgency'], 1)
-            performance_score = performance_scores.get(rec['performance_impact'], 1)
-            frequency_score = min(rec['affected_queries'] / 10, 3)  # Cap at 3
-            
-            return urgency_score * performance_score * frequency_score
-        
-        return sorted(recommendations, key=impact_score, reverse=True)
-
-
-class TrendAnalyzer:
-    """Analyze performance trends over time for unique queries"""
-    
-    def __init__(self, slow_queries):
-        self.slow_queries = slow_queries
-        self.unique_queries = {}
-        self._group_queries_by_pattern()
-    
-    def _group_queries_by_pattern(self):
-        """Group queries by their unique patterns"""
-        for query in self.slow_queries:
-            pattern_key = self._generate_query_pattern(query)
-            if pattern_key not in self.unique_queries:
-                self.unique_queries[pattern_key] = {
-                    'pattern': pattern_key,
-                    'collection': (query.get('namespace') or query.get('collection', 'unknown')),
-                    'database': (query.get('database') or 
-                                (query.get('namespace', '').split('.')[0] if query.get('namespace') and '.' in query.get('namespace', '') else 'unknown')),
-                    'query_structure': self._extract_query_structure(query),
-                    'executions': []
-                }
-            
-            # Add this execution to the pattern
-            self.unique_queries[pattern_key]['executions'].append({
-                'timestamp': query.get('timestamp'),
-                'duration': query.get('duration_ms', 0),
-                'docs_examined': query.get('docs_examined', 0),
-                'docs_returned': query.get('docs_returned', 0),
-                'keys_examined': query.get('keys_examined', 0),
-                'plan_summary': query.get('plan_summary', ''),
-                'selectivity': (query.get('docs_returned', 0) / max(query.get('docs_examined', 1), 1)) * 100
-            })
-    
-    def _generate_query_pattern(self, query):
-        """Generate a unique pattern key for the query"""
-        namespace = query.get('namespace', '')
-        if namespace and '.' in namespace:
-            collection = namespace.split('.')[-1]
-        else:
-            collection = query.get('collection', 'unknown')
-        command_info = query.get('command_info', {})
-        
-        if isinstance(command_info, dict):
-            # Extract filter pattern
-            filter_pattern = command_info.get('filter', {})
-            sort_pattern = command_info.get('sort', {})
-            
-            # Create normalized pattern
-            pattern_parts = []
-            if filter_pattern:
-                pattern_parts.append(f"filter:{self._normalize_pattern(filter_pattern)}")
-            if sort_pattern:
-                pattern_parts.append(f"sort:{self._normalize_pattern(sort_pattern)}")
-            
-            return f"{collection}::{':'.join(pattern_parts)}"
-        
-        return f"{collection}::unknown_pattern"
-    
-    def _normalize_pattern(self, pattern):
-        """Normalize query pattern by replacing values with placeholders"""
-        if isinstance(pattern, dict):
-            normalized = {}
-            for key, value in pattern.items():
-                if isinstance(value, dict):
-                    normalized[key] = self._normalize_pattern(value)
-                else:
-                    normalized[key] = "?"
-            return str(sorted(normalized.items()))
-        return "?"
-    
-    def _extract_query_structure(self, query):
-        """Extract readable query structure"""
-        command_info = query.get('command_info', {})
-        if isinstance(command_info, dict):
-            structure = {}
-            if 'filter' in command_info:
-                structure['filter'] = list(command_info['filter'].keys()) if isinstance(command_info['filter'], dict) else []
-            if 'sort' in command_info:
-                structure['sort'] = list(command_info['sort'].keys()) if isinstance(command_info['sort'], dict) else []
-            return structure
-        return {}
-    
-    def get_trend_analysis(self):
-        """Get trend analysis for all unique queries"""
-        trends = []
-        
-        for pattern_key, pattern_data in self.unique_queries.items():
-            if len(pattern_data['executions']) < 2:
-                continue  # Need at least 2 executions for trend
-            
-            # Sort executions by timestamp
-            def sort_key(x):
-                timestamp = x.get('timestamp')
-                if timestamp is None:
-                    return datetime.min
-                elif hasattr(timestamp, 'strftime'):
-                    return timestamp
-                else:
-                    return str(timestamp)
-            
-            executions = sorted(pattern_data['executions'], key=sort_key)
-            
-            # Calculate trend metrics
-            durations = [e['duration'] for e in executions]
-            selectivities = [e['selectivity'] for e in executions]
-            docs_examined = [e['docs_examined'] for e in executions]
-            
-            trend = {
-                'pattern_key': pattern_key,
-                'collection': pattern_data['collection'],
-                'database': pattern_data['database'],
-                'query_structure': pattern_data['query_structure'],
-                'total_executions': len(executions),
-                'time_span': self._calculate_time_span(executions),
+        # Calculate enhanced statistics
+        if trend_data:
+            durations = [d['duration'] for d in trend_data]
+            stats = {
+                'total_executions': len(trend_data),
                 'avg_duration': sum(durations) / len(durations),
-                'min_duration': min(durations),
                 'max_duration': max(durations),
-                'duration_trend': self._calculate_trend(durations),
-                'avg_selectivity': sum(selectivities) / len(selectivities),
-                'selectivity_trend': self._calculate_trend(selectivities),
-                'avg_docs_examined': sum(docs_examined) / len(docs_examined),
-                'docs_examined_trend': self._calculate_trend(docs_examined),
-                'executions': executions[-10:],  # Last 10 executions for chart
-                'performance_status': self._determine_performance_status(durations, selectivities),
-                'recommendations': self._generate_trend_recommendations(durations, selectivities, docs_examined)
+                'min_duration': min(durations),
+                'unique_patterns': len(patterns),
+                'unique_namespaces': len(set(d['namespace'] for d in trend_data)),
+                'unique_operations': len(set(d['operation'] for d in trend_data))
             }
-            trends.append(trend)
-        
-        return sorted(trends, key=lambda x: x['avg_duration'], reverse=True)
-    
-    def _calculate_time_span(self, executions):
-        """Calculate time span between first and last execution"""
-        if len(executions) < 2:
-            return "N/A"
-        
-        try:
-            first_time = executions[0]['timestamp']
-            last_time = executions[-1]['timestamp']
-            if first_time and last_time:
-                # Simple string comparison for now
-                return f"{first_time} to {last_time}"
-        except:
-            pass
-        return "Unknown"
-    
-    def _calculate_trend(self, values):
-        """Calculate trend direction (improving, degrading, stable)"""
-        if len(values) < 3:
-            return "insufficient_data"
-        
-        # Simple trend calculation - compare first third vs last third
-        first_third = values[:len(values)//3]
-        last_third = values[-len(values)//3:]
-        
-        first_avg = sum(first_third) / len(first_third)
-        last_avg = sum(last_third) / len(last_third)
-        
-        change_percent = ((last_avg - first_avg) / first_avg) * 100 if first_avg > 0 else 0
-        
-        if change_percent > 15:
-            return "degrading"
-        elif change_percent < -15:
-            return "improving"
         else:
-            return "stable"
-    
-    def _determine_performance_status(self, durations, selectivities):
-        """Determine overall performance status"""
-        avg_duration = sum(durations) / len(durations)
-        avg_selectivity = sum(selectivities) / len(selectivities)
+            stats = {
+                'total_executions': 0,
+                'avg_duration': 0,
+                'max_duration': 0,
+                'min_duration': 0,
+                'unique_patterns': 0,
+                'unique_namespaces': 0,
+                'unique_operations': 0
+            }
         
-        if avg_duration > 5000 or avg_selectivity < 1:
-            return "critical"
-        elif avg_duration > 1000 or avg_selectivity < 5:
-            return "warning"
-        else:
-            return "good"
-    
-    def _generate_trend_recommendations(self, durations, selectivities, docs_examined):
-        """Generate recommendations based on trends"""
-        recommendations = []
+        # Sort table by mean duration (primary) then max duration (secondary) - both descending
+        top_queries_data.sort(key=lambda x: (x['mean_duration'], x['max_duration']), reverse=True)
         
-        duration_trend = self._calculate_trend(durations)
-        selectivity_trend = self._calculate_trend(selectivities)
+        # Get available databases and namespaces for filter dropdowns
+        databases = analyzer.get_available_databases() if hasattr(analyzer, 'get_available_databases') else []
+        namespaces = analyzer.get_available_namespaces() if hasattr(analyzer, 'get_available_namespaces') else []
         
-        if duration_trend == "degrading":
-            recommendations.append("Query performance is degrading over time - consider index optimization")
+        return render_template('query_trend.html',
+                             trend_data=trend_data,
+                             stats=stats,
+                             top_queries=top_queries_data[:50],  # Limit to top 50
+                             query_details=query_details,
+                             grouping_type=grouping_type,
+                             databases=sorted(databases),
+                             namespaces=sorted(namespaces),
+                             selected_db=selected_db,
+                             selected_namespace=selected_namespace)
         
-        if selectivity_trend == "degrading":
-            recommendations.append("Query selectivity is decreasing - review data distribution and indexes")
-        
-        avg_docs_examined = sum(docs_examined) / len(docs_examined)
-        if avg_docs_examined > 10000:
-            recommendations.append("High document examination count - compound index may help")
-        
-        return recommendations
-
-
-class ResourceImpactAnalyzer:
-    """Analyze resource impact metrics"""
-    
-    def __init__(self, slow_queries):
-        self.slow_queries = slow_queries
-    
-    def get_resource_analysis(self):
-        """Analyze resource impact patterns"""
-        analysis = {
-            'memory_intensive_queries': self._find_memory_intensive_queries(),
-            'io_intensive_queries': self._find_io_intensive_queries(),
-            'cpu_intensive_queries': self._find_cpu_intensive_queries(),
-            'resource_trends': self._analyze_resource_trends(),
-            'collection_resource_usage': self._analyze_collection_resource_usage()
-        }
-        return analysis
-    
-    def _find_memory_intensive_queries(self):
-        """Find queries that likely use significant memory"""
-        memory_intensive = []
-        
-        for query in self.slow_queries:
-            docs_examined = query.get('docs_examined', 0)
-            docs_returned = query.get('docs_returned', 0)
-            duration = query.get('duration_ms', 0)
-            
-            # Heuristics for memory-intensive queries
-            memory_score = 0
-            reasons = []
-            
-            if docs_examined > 100000:
-                memory_score += 3
-                reasons.append("Large document scan")
-            
-            if docs_returned > 10000:
-                memory_score += 2
-                reasons.append("Large result set")
-            
-            if query.get('plan_summary', '').upper() == 'SORT':
-                memory_score += 2
-                reasons.append("In-memory sort operation")
-            
-            if duration > 10000 and docs_examined > docs_returned * 10:
-                memory_score += 1
-                reasons.append("Inefficient data processing")
-            
-            if memory_score >= 3:
-                memory_intensive.append({
-                    'query': query,
-                    'memory_score': memory_score,
-                    'reasons': reasons,
-                    'estimated_memory_impact': self._estimate_memory_usage(query)
-                })
-        
-        return sorted(memory_intensive, key=lambda x: x['memory_score'], reverse=True)
-    
-    def _find_io_intensive_queries(self):
-        """Find queries that are I/O intensive"""
-        io_intensive = []
-        
-        for query in self.slow_queries:
-            docs_examined = query.get('docs_examined', 0)
-            keys_examined = query.get('keys_examined', 0)
-            duration = query.get('duration_ms', 0)
-            
-            io_score = 0
-            reasons = []
-            
-            if docs_examined > 50000:
-                io_score += 3
-                reasons.append("High document examination count")
-            
-            if keys_examined > 100000:
-                io_score += 2
-                reasons.append("High key examination count")
-            
-            if query.get('plan_summary', '').upper() == 'COLLSCAN':
-                io_score += 3
-                reasons.append("Full collection scan")
-            
-            if duration > 5000 and docs_examined > 1000:
-                io_score += 1
-                reasons.append("Slow document retrieval")
-            
-            if io_score >= 3:
-                io_intensive.append({
-                    'query': query,
-                    'io_score': io_score,
-                    'reasons': reasons,
-                    'estimated_io_impact': f"{docs_examined + keys_examined:,} total examinations"
-                })
-        
-        return sorted(io_intensive, key=lambda x: x['io_score'], reverse=True)
-    
-    def _find_cpu_intensive_queries(self):
-        """Find queries that are CPU intensive"""
-        cpu_intensive = []
-        
-        for query in self.slow_queries:
-            duration = query.get('duration_ms', 0)
-            docs_examined = query.get('docs_examined', 0)
-            docs_returned = query.get('docs_returned', 0)
-            
-            cpu_score = 0
-            reasons = []
-            
-            # High duration with moderate I/O suggests CPU work
-            if duration > 5000 and docs_examined < 10000:
-                cpu_score += 2
-                reasons.append("High duration with low I/O")
-            
-            # Complex aggregation or text search
-            command_info = query.get('command_info', {})
-            if isinstance(command_info, dict):
-                if 'aggregate' in str(command_info).lower():
-                    cpu_score += 2
-                    reasons.append("Aggregation pipeline processing")
-                
-                if '$text' in str(command_info) or '$regex' in str(command_info):
-                    cpu_score += 2
-                    reasons.append("Text/regex processing")
-            
-            # High selectivity with long duration
-            selectivity = (docs_returned / max(docs_examined, 1)) * 100
-            if selectivity > 50 and duration > 2000:
-                cpu_score += 1
-                reasons.append("Processing overhead despite good selectivity")
-            
-            if cpu_score >= 2:
-                cpu_intensive.append({
-                    'query': query,
-                    'cpu_score': cpu_score,
-                    'reasons': reasons,
-                    'estimated_cpu_impact': f"{duration}ms processing time"
-                })
-        
-        return sorted(cpu_intensive, key=lambda x: x['cpu_score'], reverse=True)
-    
-    def _estimate_memory_usage(self, query):
-        """Estimate memory usage for a query"""
-        docs_examined = query.get('docs_examined', 0)
-        docs_returned = query.get('docs_returned', 0)
-        
-        # Rough estimation: average document size * documents processed
-        avg_doc_size = 2048  # Assume 2KB average document size
-        estimated_mb = ((docs_examined + docs_returned) * avg_doc_size) / (1024 * 1024)
-        
-        return f"~{estimated_mb:.1f}MB"
-    
-    def _analyze_resource_trends(self):
-        """Analyze resource usage trends"""
-        # Group by hour for trend analysis
-        hourly_stats = {}
-        
-        for query in self.slow_queries:
-            timestamp = query.get('timestamp', '')
-            if timestamp:
-                # Convert datetime to string if needed
-                if hasattr(timestamp, 'strftime'):
-                    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
-                else:
-                    timestamp_str = str(timestamp)
-                
-                # Extract hour from timestamp (simplified)
-                hour = timestamp_str[:13] if len(timestamp_str) > 13 else timestamp_str
-                
-                if hour not in hourly_stats:
-                    hourly_stats[hour] = {
-                        'total_queries': 0,
-                        'total_duration': 0,
-                        'total_docs_examined': 0,
-                        'avg_duration': 0,
-                        'avg_docs_examined': 0
-                    }
-                
-                hourly_stats[hour]['total_queries'] += 1
-                hourly_stats[hour]['total_duration'] += query.get('duration_ms', 0)
-                hourly_stats[hour]['total_docs_examined'] += query.get('docs_examined', 0)
-        
-        # Calculate averages
-        for hour_data in hourly_stats.values():
-            if hour_data['total_queries'] > 0:
-                hour_data['avg_duration'] = hour_data['total_duration'] / hour_data['total_queries']
-                hour_data['avg_docs_examined'] = hour_data['total_docs_examined'] / hour_data['total_queries']
-        
-        return hourly_stats
-    
-    def _analyze_collection_resource_usage(self):
-        """Analyze resource usage by collection"""
-        collection_stats = {}
-        
-        for query in self.slow_queries:
-            namespace = query.get('namespace', '')
-        if namespace and '.' in namespace:
-            collection = namespace.split('.')[-1]
-        else:
-            collection = query.get('collection', 'unknown')
-            
-            if collection not in collection_stats:
-                collection_stats[collection] = {
-                    'query_count': 0,
-                    'total_duration': 0,
-                    'total_docs_examined': 0,
-                    'total_memory_estimate': 0,
-                    'avg_duration': 0,
-                    'avg_docs_examined': 0
-                }
-            
-            stats = collection_stats[collection]
-            stats['query_count'] += 1
-            stats['total_duration'] += query.get('duration_ms', 0)
-            stats['total_docs_examined'] += query.get('docs_examined', 0)
-            
-            # Estimate memory usage
-            docs_examined = query.get('docs_examined', 0)
-            docs_returned = query.get('docs_returned', 0)
-            estimated_memory = ((docs_examined + docs_returned) * 2048) / (1024 * 1024)
-            stats['total_memory_estimate'] += estimated_memory
-        
-        # Calculate averages
-        for collection, stats in collection_stats.items():
-            if stats['query_count'] > 0:
-                stats['avg_duration'] = stats['total_duration'] / stats['query_count']
-                stats['avg_docs_examined'] = stats['total_docs_examined'] / stats['query_count']
-        
-        return collection_stats
-
-
-class WorkloadHotspotAnalyzer:
-    """Analyze workload patterns and detect hotspots"""
-    
-    def __init__(self, slow_queries):
-        self.slow_queries = slow_queries
-    
-    def get_hotspot_analysis(self):
-        """Get comprehensive hotspot analysis"""
-        analysis = {
-            'time_hotspots': self._analyze_time_hotspots(),
-            'collection_hotspots': self._analyze_collection_hotspots(),
-            'query_pattern_hotspots': self._analyze_query_pattern_hotspots(),
-            'peak_periods': self._identify_peak_periods(),
-            'workload_distribution': self._analyze_workload_distribution()
-        }
-        return analysis
-    
-    def _analyze_time_hotspots(self):
-        """Analyze hotspots by time periods"""
-        hourly_distribution = {}
-        
-        for query in self.slow_queries:
-            timestamp = query.get('timestamp', '')
-            if timestamp:
-                # Convert datetime to string if needed
-                if hasattr(timestamp, 'strftime'):
-                    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
-                else:
-                    timestamp_str = str(timestamp)
-                
-                if len(timestamp_str) >= 19:  # YYYY-MM-DDTHH:MM:SS format
-                    try:
-                        hour = int(timestamp_str[11:13])
-                        
-                        if hour not in hourly_distribution:
-                            hourly_distribution[hour] = {
-                                'query_count': 0,
-                                'total_duration': 0,
-                                'avg_duration': 0,
-                                'max_duration': 0
-                            }
-                        
-                        hourly_distribution[hour]['query_count'] += 1
-                        duration = query.get('duration_ms', 0)
-                        hourly_distribution[hour]['total_duration'] += duration
-                        hourly_distribution[hour]['max_duration'] = max(
-                            hourly_distribution[hour]['max_duration'], duration
-                        )
-                    except (ValueError, IndexError):
-                        continue
-        
-        # Calculate averages and identify hotspots
-        for hour_data in hourly_distribution.values():
-            if hour_data['query_count'] > 0:
-                hour_data['avg_duration'] = hour_data['total_duration'] / hour_data['query_count']
-        
-        return hourly_distribution
-    
-    def _analyze_collection_hotspots(self):
-        """Analyze hotspots by collection"""
-        collection_stats = {}
-        
-        for query in self.slow_queries:
-            namespace = query.get('namespace', '')
-        if namespace and '.' in namespace:
-            collection = namespace.split('.')[-1]
-        else:
-            collection = query.get('collection', 'unknown')
-            
-            if collection not in collection_stats:
-                collection_stats[collection] = {
-                    'query_count': 0,
-                    'total_duration': 0,
-                    'avg_duration': 0,
-                    'max_duration': 0,
-                    'total_docs_examined': 0,
-                    'avg_docs_examined': 0,
-                    'collscan_count': 0
-                }
-            
-            stats = collection_stats[collection]
-            stats['query_count'] += 1
-            duration = query.get('duration_ms', 0)
-            stats['total_duration'] += duration
-            stats['max_duration'] = max(stats['max_duration'], duration)
-            stats['total_docs_examined'] += query.get('docs_examined', 0)
-            
-            if query.get('plan_summary', '').upper() == 'COLLSCAN':
-                stats['collscan_count'] += 1
-        
-        # Calculate averages
-        for collection, stats in collection_stats.items():
-            if stats['query_count'] > 0:
-                stats['avg_duration'] = stats['total_duration'] / stats['query_count']
-                stats['avg_docs_examined'] = stats['total_docs_examined'] / stats['query_count']
-        
-        return collection_stats
-    
-    def _analyze_query_pattern_hotspots(self):
-        """Analyze hotspots by query patterns"""
-        pattern_stats = {}
-        
-        for query in self.slow_queries:
-            # Generate pattern key
-            command_info = query.get('command_info', {})
-            pattern_key = "unknown"
-            
-            if isinstance(command_info, dict):
-                if 'filter' in command_info:
-                    filter_fields = list(command_info['filter'].keys()) if command_info['filter'] else []
-                    pattern_key = f"filter_{'+'.join(sorted(filter_fields))}"
-                elif 'aggregate' in command_info:
-                    pattern_key = "aggregation"
-                elif 'find' in command_info:
-                    pattern_key = "find_query"
-            
-            if pattern_key not in pattern_stats:
-                pattern_stats[pattern_key] = {
-                    'query_count': 0,
-                    'total_duration': 0,
-                    'avg_duration': 0,
-                    'collections_affected': set(),
-                    'plan_summaries': {}
-                }
-            
-            stats = pattern_stats[pattern_key]
-            stats['query_count'] += 1
-            stats['total_duration'] += query.get('duration_ms', 0)
-            namespace = query.get('namespace', '')
-            if namespace and '.' in namespace:
-                collection_name = namespace.split('.')[-1]
-            else:
-                collection_name = query.get('collection', 'unknown')
-            stats['collections_affected'].add(collection_name)
-            
-            plan_summary = query.get('plan_summary', 'unknown')
-            stats['plan_summaries'][plan_summary] = stats['plan_summaries'].get(plan_summary, 0) + 1
-        
-        # Convert sets to lists for JSON serialization and calculate averages
-        for pattern, stats in pattern_stats.items():
-            stats['collections_affected'] = list(stats['collections_affected'])
-            if stats['query_count'] > 0:
-                stats['avg_duration'] = stats['total_duration'] / stats['query_count']
-        
-        return pattern_stats
-    
-    def _identify_peak_periods(self):
-        """Identify peak load periods"""
-        # Group queries by hour
-        hourly_load = {}
-        
-        for query in self.slow_queries:
-            timestamp = query.get('timestamp', '')
-            if timestamp:
-                # Convert datetime to string if needed
-                if hasattr(timestamp, 'strftime'):
-                    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%S')
-                else:
-                    timestamp_str = str(timestamp)
-                
-                if len(timestamp_str) >= 13:
-                    hour_key = timestamp_str[:13]  # YYYY-MM-DDTHH
-                
-                if hour_key not in hourly_load:
-                    hourly_load[hour_key] = {
-                        'query_count': 0,
-                        'total_duration': 0,
-                        'severity_score': 0
-                    }
-                
-                hourly_load[hour_key]['query_count'] += 1
-                duration = query.get('duration_ms', 0)
-                hourly_load[hour_key]['total_duration'] += duration
-                
-                # Calculate severity score based on duration and docs examined
-                docs_examined = query.get('docs_examined', 0)
-                severity = (duration / 1000) + (docs_examined / 10000)  # Weighted severity
-                hourly_load[hour_key]['severity_score'] += severity
-        
-        # Identify top peak periods
-        peak_periods = []
-        for period, data in hourly_load.items():
-            if data['query_count'] >= 5:  # Minimum queries for peak consideration
-                peak_periods.append({
-                    'period': period,
-                    'query_count': data['query_count'],
-                    'total_duration': data['total_duration'],
-                    'avg_duration': data['total_duration'] / data['query_count'],
-                    'severity_score': data['severity_score']
-                })
-        
-        return sorted(peak_periods, key=lambda x: x['severity_score'], reverse=True)[:10]
-    
-    def _analyze_workload_distribution(self):
-        """Analyze overall workload distribution"""
-        total_queries = len(self.slow_queries)
-        total_duration = sum(q.get('duration_ms', 0) for q in self.slow_queries)
-        
-        # Distribution by operation type
-        operation_types = {}
-        plan_summaries = {}
-        duration_buckets = {
-            '0-1s': 0, '1-5s': 0, '5-10s': 0, '10-30s': 0, '30s+': 0
-        }
-        
-        for query in self.slow_queries:
-            # Operation type distribution
-            command_info = query.get('command_info', {})
-            op_type = 'unknown'
-            if isinstance(command_info, dict):
-                if 'find' in command_info:
-                    op_type = 'find'
-                elif 'aggregate' in command_info:
-                    op_type = 'aggregate'
-                elif 'update' in command_info:
-                    op_type = 'update'
-                elif 'delete' in command_info:
-                    op_type = 'delete'
-            
-            operation_types[op_type] = operation_types.get(op_type, 0) + 1
-            
-            # Plan summary distribution
-            plan = query.get('plan_summary', 'unknown')
-            plan_summaries[plan] = plan_summaries.get(plan, 0) + 1
-            
-            # Duration bucket distribution
-            duration = query.get('duration_ms', 0) / 1000  # Convert to seconds
-            if duration < 1:
-                duration_buckets['0-1s'] += 1
-            elif duration < 5:
-                duration_buckets['1-5s'] += 1
-            elif duration < 10:
-                duration_buckets['5-10s'] += 1
-            elif duration < 30:
-                duration_buckets['10-30s'] += 1
-            else:
-                duration_buckets['30s+'] += 1
-        
-        return {
-            'total_queries': total_queries,
-            'total_duration_ms': total_duration,
-            'avg_duration_ms': total_duration / total_queries if total_queries > 0 else 0,
-            'operation_type_distribution': operation_types,
-            'plan_summary_distribution': plan_summaries,
-            'duration_distribution': duration_buckets
-        }
-
-
-@app.route('/enhanced-index-recommendations')
-def enhanced_index_recommendations():
-    """Enhanced index recommendations with advanced analysis"""
-    if not analyzer.slow_queries:
-        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
-        return redirect('/')
-    
-    try:
-        # Create enhanced analyzer instance
-        enhanced_analyzer = EnhancedIndexAnalyzer(analyzer.slow_queries)
-        
-        # Get enhanced recommendations
-        enhanced_recommendations = enhanced_analyzer.analyze_queries_advanced()
-        
-        # Calculate summary statistics
-        total_queries = len(analyzer.slow_queries)
-        total_patterns = len(set([rec.get('pattern_hash', '') for rec in enhanced_recommendations]))
-        critical_recommendations = sum(1 for rec in enhanced_recommendations if rec.get('urgency') == 'critical')
-        high_impact_recommendations = sum(1 for rec in enhanced_recommendations if rec.get('performance_impact') == 'high')
-        
-        summary_stats = {
-            'total_queries_analyzed': total_queries,
-            'unique_patterns_found': total_patterns,
-            'total_recommendations': len(enhanced_recommendations),
-            'critical_recommendations': critical_recommendations,
-            'high_impact_recommendations': high_impact_recommendations,
-            'potential_performance_gain': sum(rec.get('estimated_improvement', 0) for rec in enhanced_recommendations)
-        }
-        
-        return render_template('enhanced_index_recommendations.html', 
-                             recommendations=enhanced_recommendations,
-                             summary_stats=summary_stats)
-    
     except Exception as e:
-        flash(f'Error generating enhanced recommendations: {str(e)}', 'error')
-        return redirect('/')
-
-
-@app.route('/trend-analysis')
-def trend_analysis():
-    """Performance trend analysis for unique queries"""
-    if not analyzer.slow_queries:
-        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
-        return redirect('/')
-    
-    try:
-        trend_analyzer = TrendAnalyzer(analyzer.slow_queries)
-        trends = trend_analyzer.get_trend_analysis()
-        
-        # Calculate summary statistics
-        total_unique_queries = len(trends)
-        degrading_trends = sum(1 for t in trends if t['duration_trend'] == 'degrading')
-        improving_trends = sum(1 for t in trends if t['duration_trend'] == 'improving')
-        critical_performance = sum(1 for t in trends if t['performance_status'] == 'critical')
-        
-        summary_stats = {
-            'total_unique_queries': total_unique_queries,
-            'degrading_trends': degrading_trends,
-            'improving_trends': improving_trends,
-            'stable_trends': total_unique_queries - degrading_trends - improving_trends,
-            'critical_performance_queries': critical_performance,
-            'total_executions': sum(t['total_executions'] for t in trends)
-        }
-        
-        return render_template('trend_analysis.html', 
-                             trends=trends, 
-                             summary_stats=summary_stats)
-    
-    except Exception as e:
-        flash(f'Error generating trend analysis: {str(e)}', 'error')
-        return redirect('/')
-
-
-@app.route('/resource-impact')
-def resource_impact():
-    """Resource impact metrics analysis"""
-    if not analyzer.slow_queries:
-        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
-        return redirect('/')
-    
-    try:
-        resource_analyzer = ResourceImpactAnalyzer(analyzer.slow_queries)
-        analysis = resource_analyzer.get_resource_analysis()
-        
-        # Calculate summary statistics
-        summary_stats = {
-            'total_queries_analyzed': len(analyzer.slow_queries),
-            'memory_intensive_count': len(analysis['memory_intensive_queries']),
-            'io_intensive_count': len(analysis['io_intensive_queries']),
-            'cpu_intensive_count': len(analysis['cpu_intensive_queries']),
-            'collections_analyzed': len(analysis['collection_resource_usage']),
-            'peak_resource_periods': len([h for h in analysis['resource_trends'].values() if h.get('total_queries', 0) > 10])
-        }
-        
-        return render_template('resource_impact.html', 
-                             analysis=analysis, 
-                             summary_stats=summary_stats)
-    
-    except Exception as e:
-        flash(f'Error generating resource impact analysis: {str(e)}', 'error')
-        return redirect('/')
-
-
-@app.route('/workload-hotspots')
-def workload_hotspots():
-    """Workload hotspot detection and peak time analysis"""
-    if not analyzer.slow_queries:
-        flash('No slow queries found. Please upload MongoDB logs first.', 'warning')
-        return redirect('/')
-    
-    try:
-        workload_analyzer = WorkloadHotspotAnalyzer(analyzer.slow_queries)
-        analysis = workload_analyzer.get_hotspot_analysis()
-        
-        # Calculate summary statistics
-        peak_hours = len([h for h in analysis['time_hotspots'].values() if h.get('query_count', 0) > 5])
-        hotspot_collections = len([c for c in analysis['collection_hotspots'].values() if c.get('query_count', 0) > 10])
-        
-        summary_stats = {
-            'total_queries_analyzed': len(analyzer.slow_queries),
-            'peak_time_periods': len(analysis['peak_periods']),
-            'peak_hours_identified': peak_hours,
-            'hotspot_collections': hotspot_collections,
-            'query_patterns_found': len(analysis['query_pattern_hotspots']),
-            'avg_queries_per_hour': analysis['workload_distribution']['total_queries'] / max(peak_hours, 1)
-        }
-        
-        return render_template('workload_hotspots.html', 
-                             analysis=analysis, 
-                             summary_stats=summary_stats)
-    
-    except Exception as e:
-        flash(f'Error generating workload hotspot analysis: {str(e)}', 'error')
-        return redirect('/')
+        flash(f'Error generating query trend data: {str(e)}', 'error')
+        return render_template('query_trend.html',
+                             trend_data=[],
+                             stats={},
+                             top_queries=[],
+                             query_details={},
+                             grouping_type='pattern_key',
+                             databases=[],
+                             namespaces=[],
+                             selected_db='all',
+                             selected_namespace='all')
 
 
 if __name__ == '__main__':

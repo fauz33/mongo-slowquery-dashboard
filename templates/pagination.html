@@ -6,7 +6,9 @@
         <label class="form-label me-2 mb-0">Show:</label>
         <select class="form-select form-select-sm" style="width: auto;" onchange="changePerPage(this.value)">
             <option value="100" {% if pagination.per_page == 100 %}selected{% endif %}>100</option>
-            <option value="300" {% if pagination.per_page == 300 %}selected{% endif %}>300</option>
+            <option value="250" {% if pagination.per_page == 250 %}selected{% endif %}>250</option>
+            <option value="500" {% if pagination.per_page == 500 %}selected{% endif %}>500</option>
+            <option value="1000" {% if pagination.per_page == 1000 %}selected{% endif %}>1000</option>
             <option value="all" {% if pagination.per_page == pagination.total %}selected{% endif %}>All</option>
         </select>
         <span class="ms-2 text-muted">

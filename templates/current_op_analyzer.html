@@ -58,6 +58,32 @@
                                     plain JSON array <code>[...]</code>
                                 </div>
                             </div>
+
+                            <!-- Quick Filters -->
+                            <div class="row g-3 mb-3">
+                                <div class="col-sm-3">
+                                    <label for="threshold" class="form-label">Long-running Threshold (seconds)</label>
+                                    <input type="number" min="1" step="1" class="form-control" id="threshold" name="threshold"
+                                           value="{{ (analysis.filters.threshold if analysis and analysis.filters else 30) }}">
+                                </div>
+                                <div class="col-sm-9 d-flex align-items-end">
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" id="only_active" name="only_active"
+                                               {% if analysis and analysis.filters and analysis.filters.only_active %}checked{% endif %}>
+                                        <label class="form-check-label" for="only_active">Only Active</label>
+                                    </div>
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" id="only_waiting" name="only_waiting"
+                                               {% if analysis and analysis.filters and analysis.filters.only_waiting %}checked{% endif %}>
+                                        <label class="form-check-label" for="only_waiting">Waiting for Lock</label>
+                                    </div>
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" id="only_collscan" name="only_collscan"
+                                               {% if analysis and analysis.filters and analysis.filters.only_collscan %}checked{% endif %}>
+                                        <label class="form-check-label" for="only_collscan">COLLSCAN Only</label>
+                                    </div>
+                                </div>
+                            </div>
                             
                             <div class="mb-3">
                                 <button type="submit" class="btn btn-primary me-2">
@@ -79,6 +105,32 @@
                                        accept=".txt,.json,.log">
                                 <div class="form-text">
                                     Upload a text file containing db.currentOp() output (supported: .txt, .json, .log)
+                                </div>
+                            </div>
+
+                            <!-- Quick Filters (same as paste) -->
+                            <div class="row g-3 mb-3">
+                                <div class="col-sm-3">
+                                    <label for="threshold_up" class="form-label">Long-running Threshold (seconds)</label>
+                                    <input type="number" min="1" step="1" class="form-control" id="threshold_up" name="threshold"
+                                           value="{{ (analysis.filters.threshold if analysis and analysis.filters else 30) }}">
+                                </div>
+                                <div class="col-sm-9 d-flex align-items-end">
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" id="only_active_up" name="only_active"
+                                               {% if analysis and analysis.filters and analysis.filters.only_active %}checked{% endif %}>
+                                        <label class="form-check-label" for="only_active_up">Only Active</label>
+                                    </div>
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" id="only_waiting_up" name="only_waiting"
+                                               {% if analysis and analysis.filters and analysis.filters.only_waiting %}checked{% endif %}>
+                                        <label class="form-check-label" for="only_waiting_up">Waiting for Lock</label>
+                                    </div>
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" id="only_collscan_up" name="only_collscan"
+                                               {% if analysis and analysis.filters and analysis.filters.only_collscan %}checked{% endif %}>
+                                        <label class="form-check-label" for="only_collscan_up">COLLSCAN Only</label>
+                                    </div>
                                 </div>
                             </div>
                             
@@ -224,6 +276,68 @@
             </div>
         </div>
     </div>
+
+    <!-- Recommendations -->
+    {% if analysis.ops_brief %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0"><i class="fas fa-microchip me-2"></i>Top Active Operations (Resources)</h5>
+                        <small class="text-muted">Shows CPU time, memory (if available), and I/O per operation</small>
+                    </div>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="exportOpsBriefJson">
+                            <i class="fas fa-file-code me-1"></i>JSON
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="exportOpsBriefCsv">
+                            <i class="fas fa-file-csv me-1"></i>CSV
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>OpID</th>
+                                    <th>NS</th>
+                                    <th>Op</th>
+                                    <th>Active</th>
+                                    <th>Wait</th>
+                                    <th>CPU (s)</th>
+                                    <th>Mem (MB)</th>
+                                    <th>Read (B)</th>
+                                    <th>Written (B)</th>
+                                    <th>Plan</th>
+                                    <th>Client</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for r in analysis.ops_brief %}
+                                <tr>
+                                    <td><code>{{ r.opid }}</code></td>
+                                    <td><small>{{ r.ns or '-' }}</small></td>
+                                    <td><span class="badge bg-secondary">{{ r.op or '-' }}</span></td>
+                                    <td>{% if r.active %}<span class="badge bg-success">Yes</span>{% else %}<span class="badge bg-secondary">No</span>{% endif %}</td>
+                                    <td>{% if r.waitingForLock %}<span class="badge bg-warning text-dark">Lock</span>{% else %}-{% endif %}</td>
+                                    <td>{{ '%.3f'|format(r.cpuTime_s or 0) }}</td>
+                                    <td>{{ r.memoryMb if r.memoryMb is not none else '-' }}</td>
+                                    <td>{{ r.bytesRead if r.bytesRead is not none else '-' }}</td>
+                                    <td>{{ r.bytesWritten if r.bytesWritten is not none else '-' }}</td>
+                                    <td><small>{{ r.planSummary }}</small></td>
+                                    <td><small>{{ r.client or '-' }}</small></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Recommendations -->
     {% if analysis.recommendations %}
@@ -604,6 +718,53 @@ document.addEventListener('DOMContentLoaded', function() {
             const a = document.createElement('a');
             a.href = url;
             a.download = `currentop_analysis_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    }
+    
+    // Export ops_brief JSON/CSV
+    const opsBrief = {{ analysis.ops_brief|tojson if analysis and analysis.ops_brief else '[]' }};
+    const btnJson = document.getElementById('exportOpsBriefJson');
+    const btnCsv = document.getElementById('exportOpsBriefCsv');
+    if (btnJson) {
+        btnJson.addEventListener('click', function() {
+            const blob = new Blob([JSON.stringify(opsBrief, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `currentop_ops_brief_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    }
+    if (btnCsv) {
+        btnCsv.addEventListener('click', function() {
+            // Convert opsBrief to CSV
+            const headers = ['opid','ns','op','client','active','waitingForLock','planSummary','cpuTime_s','memoryMb','bytesRead','bytesWritten'];
+            const lines = [];
+            lines.push(headers.join(','));
+            (opsBrief || []).forEach(r => {
+                const row = headers.map(h => {
+                    let v = r[h];
+                    if (v === null || v === undefined) return '';
+                    v = String(v).replace(/"/g,'""');
+                    if (v.includes(',') || v.includes('"') || v.includes('\n')) {
+                        return `"${v}"`;
+                    }
+                    return v;
+                });
+                lines.push(row.join(','));
+            });
+            const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `currentop_ops_brief_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.csv`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);

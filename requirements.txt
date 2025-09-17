@@ -7,19 +7,30 @@ Jinja2==3.1.2
 pandas==2.0.3
 python-dateutil==2.8.2
 
+# HTTP requests (used in comprehensive testing)
+requests==2.31.0
+
 # Standard library modules (included with Python, listed for documentation)
 # os - File system operations
 # re - Regular expressions  
 # json - JSON parsing and generation
 # hashlib - Hash generation for query fingerprinting
 # datetime - Date and time handling
-# collections - defaultdict, Counter for data aggregation
+# collections - defaultdict, deque, Counter for data aggregation
 # tempfile - Temporary file handling
 # io - Input/output operations
 # zipfile - ZIP file handling for log uploads
 # tarfile - TAR file handling for log uploads  
 # gzip - GZIP file handling for log uploads
 # shutil - High-level file operations
+# sqlite3 - SQLite database operations
+# threading - Multi-threading for optimized processing
+# concurrent.futures - ThreadPoolExecutor for parallel processing
+# mmap - Memory-mapped file access for large log processing
+# queue - Queue operations for thread communication
+# calendar - Calendar utilities for timestamp processing
+# sys - System-specific parameters and functions
+# subprocess - Subprocess management for testing framework
 
 # Optional: For production deployment
 # gunicorn==21.2.0

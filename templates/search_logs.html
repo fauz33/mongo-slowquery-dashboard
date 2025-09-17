@@ -33,28 +33,7 @@
             </div>
             <div class="card-body">
                 <form method="GET" action="{{ url_for('search_logs') }}" class="row g-3">
-                    <!-- Keyword Search -->
-                    <div class="col-md-6">
-                        <label for="keyword" class="form-label">Keyword Search</label>
-                        <input type="text" class="form-control" id="keyword" name="keyword" 
-                               value="{{ keyword or '' }}" placeholder="Search entire log lines">
-                        <div class="form-text">Search for text anywhere in the log entries</div>
-                    </div>
                     
-                    <!-- Field-specific Search -->
-                    <div class="col-md-3">
-                        <label for="field_name" class="form-label">Field Name</label>
-                        <input type="text" class="form-control" id="field_name" name="field_name" 
-                               value="{{ field_name or '' }}" placeholder="e.g., c, msg, ns">
-                        <div class="form-text">JSON field name (supports dot notation)</div>
-                    </div>
-                    
-                    <div class="col-md-3">
-                        <label for="field_value" class="form-label">Field Value</label>
-                        <input type="text" class="form-control" id="field_value" name="field_value" 
-                               value="{{ field_value or '' }}" placeholder="Value or pattern">
-                        <div class="form-text">Value to search for in the field</div>
-                    </div>
                     
                     <!-- Date Range -->
                     <div class="col-md-4">
@@ -79,7 +58,7 @@
                         {% endif %}
                     </div>
                     
-                    <!-- Options -->
+                    <!-- Options & Chained Conditions -->
                     <div class="col-md-2">
                         <label for="limit" class="form-label">Max Results</label>
                         <select class="form-select" id="limit" name="limit">
@@ -90,16 +69,14 @@
                             <option value="1000" {% if limit == 1000 %}selected{% endif %}>1000</option>
                         </select>
                     </div>
-                    
-                    <div class="col-md-2">
-                        <label class="form-label">&nbsp;</label>
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="use_regex" name="use_regex" 
-                                   {% if use_regex %}checked{% endif %}>
-                            <label class="form-check-label" for="use_regex">
-                                Use Regex
-                            </label>
-                        </div>
+
+                    <div class="col-12 mt-3">
+                        <h6 class="mb-2">Additional Conditions (AND)</h6>
+                        <div id="conditionsContainer"></div>
+                        <button type="button" class="btn btn-sm btn-outline-primary mt-2" id="addConditionBtn">
+                            <i class="fas fa-plus me-1"></i>Add Condition
+                        </button>
+                        <div class="form-text">Date range is applied first, then each condition in order (like grep | grep).</div>
                     </div>
                     
                     <div class="col-12">
@@ -120,7 +97,7 @@
                             </button>
                         </div>
                         {% endif %}
-                        <button type="submit" class="btn btn-primary me-2">
+                        <button type="submit" class="btn btn-primary me-2" id="searchBtn">
                             <i class="fas fa-search me-2"></i>Search
                         </button>
                         <a href="{{ url_for('search_logs') }}" class="btn btn-outline-secondary">
@@ -128,6 +105,43 @@
                         </a>
                     </div>
                 </form>
+                <script>
+                (function(){
+                  const container = document.getElementById('conditionsContainer');
+                  const addBtn = document.getElementById('addConditionBtn');
+                  let nextIndex = 0;
+
+                  function row(idx, preset){
+                    const d = document.createElement('div');
+                    d.className = 'row g-2 align-items-end mb-2';
+                    d.dataset.idx = idx;
+                    d.innerHTML = `
+                      <div class=\"col-md-2\">\n        <label class=\"form-label\">Type<\/label>\n        <select class=\"form-select\" name=\"filters[${idx}][type]\">\n          <option value=\"keyword\" ${preset&&preset.type==='keyword'?'selected':''}>Keyword<\/option>\n          <option value=\"field\" ${preset&&preset.type==='field'?'selected':''}>Field<\/option>\n        <\/select>\n      <\/div>\n      <div class=\"col-md-3\">\n        <label class=\"form-label\">Field (for Field type)<\/label>\n        <input class=\"form-control\" name=\"filters[${idx}][name]\" value=\"${preset&&preset.name?preset.name:''}\" placeholder=\"e.g., attr.ns\">\n      <\/div>\n      <div class=\"col-md-3\">\n        <label class=\"form-label\">Value<\/label>\n        <input class=\"form-control\" name=\"filters[${idx}][value]\" value=\"${preset&&preset.value?preset.value:''}\" placeholder=\"Search text or regex\">\n      <\/div>\n      <div class=\"col-md-3\">\n        <div class=\"form-check\"><input class=\"form-check-input\" type=\"checkbox\" id=\"f${idx}_regex\" name=\"filters[${idx}][regex]\" ${preset&&preset.regex?'checked':''}><label class=\"form-check-label\" for=\"f${idx}_regex\">Regex<\/label><\/div>\n        <div class=\"form-check\"><input class=\"form-check-input\" type=\"checkbox\" id=\"f${idx}_case\"  name=\"filters[${idx}][case]\"  ${preset&&preset.case_sensitive?'checked':''}><label class=\"form-check-label\" for=\"f${idx}_case\">Case sensitive<\/label><\/div>\n        <div class=\"form-check\"><input class=\"form-check-input\" type=\"checkbox\" id=\"f${idx}_not\"   name=\"filters[${idx}][not]\"   ${preset&&preset.negate?'checked':''}><label class=\"form-check-label\" for=\"f${idx}_not\">NOT (exclude)<\/label><\/div>\n      <\/div>\n      <div class=\"col-md-1 text-end\"><button type=\"button\" class=\"btn btn-sm btn-outline-danger\" data-remove=\"${idx}\"><i class=\"fas fa-times\"><\/i><\/button><\/div>`;
+                    return d;
+                  }
+
+                  addBtn?.addEventListener('click', function(){ container.appendChild(row(nextIndex++, null)); });
+                  container?.addEventListener('click', function(e){ const btn=e.target.closest('button[data-remove]'); if(!btn) return; const idx=btn.getAttribute('data-remove'); const r=container.querySelector(`div[data-idx=\\"${idx}\\"]`); r&&r.remove(); });
+
+                  // Rehydrate from URL
+                  const params = new URLSearchParams(window.location.search);
+                  const idxs = [];
+                  params.forEach((v,k)=>{ if(k.startsWith('filters[') && k.endsWith('][type]')){ const i=k.split('[')[1].split(']')[0]; if(!idxs.includes(i)) idxs.push(i);} });
+                  idxs.sort((a,b)=>parseInt(a)-parseInt(b));
+                  idxs.forEach(function(i){
+                    const preset={
+                      type: params.get(`filters[${i}][type]`)||'keyword',
+                      name: params.get(`filters[${i}][name]`)||'',
+                      value: params.get(`filters[${i}][value]`)||'',
+                      regex: ['on','true','1'].includes(params.get(`filters[${i}][regex]`)),
+                      case_sensitive: ['on','true','1'].includes(params.get(`filters[${i}][case]`)),
+                      negate: ['on','true','1'].includes(params.get(`filters[${i}][not]`)),
+                    };
+                    container.appendChild(row(i, preset));
+                    nextIndex=Math.max(nextIndex, parseInt(i,10)+1);
+                  });
+                })();
+                </script>
                 
                 <!-- Search Examples -->
                 <div class="mt-3">
@@ -167,6 +181,17 @@
                 {% endif %}
             </div>
             <div class="card-body">
+                {% if heavy_search_warning %}
+                <div class="alert alert-warning" role="alert">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Showing the first {{ limit }} matches for a very broad search. Add filters or a date range to narrow the results and compute an exact total.
+                </div>
+                {% elif search_performed and not total_found_exact %}
+                <div class="alert alert-info" role="alert">
+                    <i class="fas fa-info-circle me-2"></i>
+                    Showing the first {{ limit }} results. Refine the search to calculate the full total.
+                </div>
+                {% endif %}
                 {% if results %}
                     <!-- Pagination controls -->
                     {% if pagination %}
@@ -178,8 +203,6 @@
                             <thead class="table-primary">
                                 <tr>
                                     <th style="min-width: 80px; color: #000; font-weight: bold;">#</th>
-                                    <th style="min-width: 120px; color: #000; font-weight: bold;">File</th>
-                                    <th style="min-width: 80px; color: #000; font-weight: bold;">Line</th>
                                     <th style="min-width: 140px; color: #000; font-weight: bold;">Timestamp</th>
                                     <th style="min-width: 600px; color: #000; font-weight: bold;">Log Entry</th>
                                 </tr>
@@ -189,14 +212,9 @@
                                 <tr>
                                     <td class="text-center">{{ loop.index }}</td>
                                     <td>
-                                        <small class="text-muted">{{ result.file_path.split('/')[-1] }}</small>
-                                    </td>
-                                    <td class="text-center">
-                                        <span class="badge bg-secondary">{{ result.line_number }}</span>
-                                    </td>
-                                    <td>
-                                        {% if result.timestamp %}
-                                            <small>{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                                        {% set timestamp = result.timestamp if result is mapping else (result.timestamp if result.timestamp is defined else None) %}
+                                        {% if timestamp %}
+                                            <small>{{ timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</small>
                                         {% else %}
                                             <small class="text-muted">N/A</small>
                                         {% endif %}
@@ -210,10 +228,10 @@
                                                 data-bs-toggle="modal" 
                                                 data-bs-target="#logModal"
                                                 data-log-number="{{ loop.index }}"
-                                                data-file-path="{{ result.file_path }}"
-                                                data-line-number="{{ result.line_number }}"
-                                                data-timestamp="{{ result.timestamp.strftime('%Y-%m-%d %H:%M:%S') if result.timestamp else 'N/A' }}"
-                                                data-log-entry="{{ result.raw_line|e }}">
+                                                data-file-path="{{ result.file_path if result is mapping else (result.file_path if result.file_path is defined else '') }}"
+                                                data-line-number="{{ result.line_number if result is mapping else (result.line_number if result.line_number is defined else '') }}"
+                                                data-timestamp="{{ timestamp.strftime('%Y-%m-%d %H:%M:%S') if timestamp else 'N/A' }}"
+                                                data-log-entry="{{ (result.raw_line if result is mapping else (result.raw_line if result.raw_line is defined else ''))|e }}">
                                             <i class="fas fa-expand-alt me-1"></i>View Full
                                         </button>
                                     </td>
@@ -366,29 +384,7 @@ function copyLogEntry() {
     }
 }
 
-// Form validation and examples
-document.addEventListener('DOMContentLoaded', function() {
-    const keywordInput = document.getElementById('keyword');
-    const fieldNameInput = document.getElementById('field_name');
-    const fieldValueInput = document.getElementById('field_value');
-    
-    // Show/hide field inputs based on usage
-    function updateFormState() {
-        if (keywordInput.value.trim()) {
-            fieldNameInput.parentElement.style.opacity = '0.7';
-            fieldValueInput.parentElement.style.opacity = '0.7';
-        } else {
-            fieldNameInput.parentElement.style.opacity = '1';
-            fieldValueInput.parentElement.style.opacity = '1';
-        }
-    }
-    
-    keywordInput.addEventListener('input', updateFormState);
-    fieldNameInput.addEventListener('input', updateFormState);
-    fieldValueInput.addEventListener('input', updateFormState);
-    
-    updateFormState();
-});
+// (Legacy keyword/field UI removed)
 
 // Date range functionality
 function setDateRange(range) {
