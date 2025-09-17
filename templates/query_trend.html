@@ -241,7 +241,7 @@
                                 </td>
                                 <td class="text-center">
                                     <button class="btn btn-outline-primary btn-sm" 
-                                            onclick="showQueryDetails('{{ query.query_hash }}')"
+                                            onclick="showQueryDetails('{{ query.pattern_key }}')"
                                             title="View query details">
                                         <i class="fas fa-info-circle"></i> Details
                                     </button>
@@ -351,7 +351,8 @@
                 operation: d.operation,
                 duration: d.duration,
                 timestamp: d.timestamp,
-                avg_duration: d.avg_duration
+                avg_duration: d.avg_duration,
+                group_key: d.pattern_key
             }))
         };
     });
@@ -408,12 +409,13 @@
     
     // Function to show query details from chart click
     function showQueryDetailsFromChart(pointData) {
-        const details = queryDetails[pointData.query_hash];
+        const lookupKey = pointData.group_key || pointData.query_hash;
+        const details = queryDetails[lookupKey];
         if (!details) {
             alert('Query details not available');
             return;
         }
-        
+
         const modalContent = document.getElementById('queryDetailsContent');
         modalContent.innerHTML = `
             <div class="row">
@@ -422,7 +424,8 @@
                     <table class="table table-sm">
                         <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
                         <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
-                        <tr><td><strong>Query Hash:</strong></td><td><code>${pointData.query_hash}</code></td></tr>
+                        <tr><td><strong>Primary Query Hash:</strong></td><td><code>${details.query_hash || 'MIXED'}</code></td></tr>
+                        <tr><td><strong>Group Key:</strong></td><td><code>${lookupKey}</code></td></tr>
                     </table>
                 </div>
                 <div class="col-md-6">
@@ -484,7 +487,7 @@
             alert('Query details not available');
             return;
         }
-        
+
         const modalContent = document.getElementById('queryDetailsContent');
         modalContent.innerHTML = `
             <div class="row">
@@ -493,7 +496,8 @@
                     <table class="table table-sm">
                         <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
                         <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
-                        <tr><td><strong>Query Hash:</strong></td><td><code>${queryHash}</code></td></tr>
+                        <tr><td><strong>Primary Query Hash:</strong></td><td><code>${details.query_hash || 'MIXED'}</code></td></tr>
+                        <tr><td><strong>Group Key:</strong></td><td><code>${details.pattern_key}</code></td></tr>
                     </table>
                 </div>
                 <div class="col-md-6">

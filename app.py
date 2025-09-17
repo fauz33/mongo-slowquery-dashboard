@@ -4141,64 +4141,38 @@ def query_trend():
     selected_namespace = request.args.get('namespace', 'all')
     
     try:
-        # Always use the original method that provides individual execution data
-        # needed for scatter plot, but apply grouping logic for filtering/display
-        patterns = analyzer.analyze_query_patterns()
-        
-        # Apply database and namespace filtering
-        if selected_db != 'all' or selected_namespace != 'all':
-            filtered_patterns = {}
-            for pattern_key, pattern_data in patterns.items():
-                database = pattern_data.get('database', '')
-                collection = pattern_data.get('collection', '')
-                namespace = f"{database}.{collection}"
-                
-                # Apply database filter
-                if selected_db != 'all' and database != selected_db:
-                    continue
-                    
-                # Apply namespace filter
-                if selected_namespace != 'all' and namespace != selected_namespace:
-                    continue
-                    
-                filtered_patterns[pattern_key] = pattern_data
-            patterns = filtered_patterns
-        
-        # Apply grouping logic to modify pattern keys for display grouping
-        if grouping_type != 'pattern_key':
-            grouped_patterns = {}
-            for pattern_key, pattern_data in patterns.items():
-                if grouping_type == 'namespace':
-                    # Group by namespace only
-                    group_key = f"{pattern_data.get('database', 'unknown')}.{pattern_data.get('collection', 'unknown')}"
-                elif grouping_type == 'query_hash':
-                    # Group by query hash only
-                    group_key = pattern_data.get('query_hash', 'unknown')
-                else:
-                    group_key = pattern_key
-                
-                if group_key not in grouped_patterns:
-                    grouped_patterns[group_key] = pattern_data.copy()
-                else:
-                    # Merge executions from multiple patterns into one group
-                    existing = grouped_patterns[group_key]
-                    existing['executions'].extend(pattern_data.get('executions', []))
-                    existing['total_count'] += pattern_data.get('total_count', 0)
-                    
-                    # Update aggregated metrics
-                    all_durations = [exec.get('duration', 0) for exec in existing['executions']]
-                    if all_durations:
-                        existing['avg_duration'] = sum(all_durations) / len(all_durations)
-                        existing['min_duration'] = min(all_durations)
-                        existing['max_duration'] = max(all_durations)
-            
-            patterns = grouped_patterns
-        
+        dataset = analyzer.get_query_trend_dataset(
+            grouping=grouping_type,
+            database=selected_db,
+            namespace=selected_namespace,
+            limit=500,
+            scatter_limit=2000
+        )
+
+        patterns = dataset.get('patterns', [])
+        executions = dataset.get('executions', [])
+
+        # Ensure executions carry a group key for quick lookup (fallback datasets)
+        def resolve_group_key(exec_row):
+            if 'group_key' in exec_row:
+                return exec_row['group_key']
+            ns = exec_row.get('namespace')
+            if not ns:
+                ns = f"{exec_row.get('database', 'unknown')}.{exec_row.get('collection', 'unknown')}"
+            if grouping_type == 'namespace':
+                return ns
+            elif grouping_type == 'query_hash':
+                return exec_row.get('query_hash', 'unknown')
+            return f"{exec_row.get('query_hash', 'unknown')}_{exec_row.get('database', 'unknown')}_{exec_row.get('collection', 'unknown')}"
+
+        for exec_row in executions:
+            exec_row['group_key'] = resolve_group_key(exec_row)
+
         # Prepare enhanced data for scatter plot and table
         trend_data = []
         top_queries_data = []
         query_details = {}  # For modal popups
-        
+
         def format_duration_time(total_ms):
             """Convert milliseconds to human-readable format"""
             total_seconds = total_ms / 1000
@@ -4236,60 +4210,69 @@ def query_trend():
                     'formatted': f"{hours:.1f}h",
                     'raw': f"{ms_value:,.0f}ms"
                 }
-        
-        def extract_operation_type(query_str):
-            """Extract operation type from query string"""
+
+        def infer_operation(query_blob):
             try:
-                if not query_str:
+                if not query_blob:
+                    return 'unknown'
+                if isinstance(query_blob, str):
+                    parsed = json.loads(query_blob)
+                elif isinstance(query_blob, dict):
+                    parsed = query_blob
+                else:
                     return 'unknown'
 
-                query_obj = json.loads(query_str)
-                if isinstance(query_obj, dict):
-                    # Check for findAndModify first (maps to update semantically)
-                    if 'findAndModify' in query_obj:
-                        return 'update'
+                if not isinstance(parsed, dict):
+                    return 'unknown'
 
-                    # Check for other operations
-                    operations = ['find', 'aggregate', 'update', 'insert', 'delete', 'count', 'distinct', 'createIndexes']
-                    for op in operations:
-                        if op in query_obj:
-                            return op
-                return 'other'
-            except:
+                operation_candidates = ['findAndModify', 'aggregate', 'find', 'update', 'delete', 'insert', 'distinct', 'count', 'explain']
+                for candidate in operation_candidates:
+                    if candidate in parsed:
+                        return 'update' if candidate == 'findAndModify' else candidate
+
+                command_obj = parsed.get('command') if isinstance(parsed.get('command'), dict) else None
+                if command_obj:
+                    for candidate in operation_candidates:
+                        if candidate in command_obj:
+                            return 'update' if candidate == 'findAndModify' else candidate
+                    op_name = command_obj.get('commandName') or command_obj.get('operation')
+                    if isinstance(op_name, str) and op_name:
+                        return op_name.lower()
+
+                if 'saslStart' in parsed or (command_obj and 'saslStart' in command_obj):
+                    return 'saslStart'
+
                 return 'unknown'
-        
+            except Exception:
+                return 'unknown'
+
+        for exec_row in executions:
+            if not exec_row.get('operation_type'):
+                query_text = exec_row.get('query_text') or exec_row.get('query')
+                exec_row['operation_type'] = infer_operation(query_text)
+
         # Process each pattern for both scatter plot and table
-        for pattern_key, pattern_data in patterns.items():
-            executions = pattern_data.get('executions', [])
-            
-            if not executions:
+        for pattern in patterns:
+            if not pattern:
                 continue
-            
-            # Calculate aggregated statistics for table
-            durations = [e.get('duration', 0) for e in executions]
-            total_duration = sum(durations)
-            avg_duration = total_duration / len(durations) if durations else 0
-            max_duration = max(durations) if durations else 0
-            
-            # Get pattern details
-            first_execution = executions[0]
-            database = first_execution.get('database', 'unknown')
-            collection = first_execution.get('collection', 'unknown')
-            namespace = f"{database}.{collection}"
-            
-            # Extract operation type from sample query
-            sample_query = pattern_data.get('sample_query', '')
-            operation_type = extract_operation_type(sample_query)
-            
-            # Format durations for display
+
+            namespace = pattern.get('namespace') or f"{pattern.get('database', 'unknown')}.{pattern.get('collection', 'unknown')}"
+            operation_type = pattern.get('operation_type', 'unknown')
+            if operation_type == 'unknown':
+                operation_type = infer_operation(pattern.get('sample_query'))
+            avg_duration = pattern.get('avg_duration', 0)
+            max_duration = pattern.get('max_duration', 0)
+            total_duration = pattern.get('total_duration', 0)
+            execution_count = pattern.get('execution_count', 0)
+
             mean_duration_formatted = format_duration_detailed(avg_duration)
             max_duration_formatted = format_duration_detailed(max_duration)
-            
+
             # Prepare table row data
             top_queries_data.append({
                 'namespace': namespace,
                 'operation': operation_type,
-                'execution_count': len(executions),
+                'execution_count': execution_count,
                 'mean_duration': avg_duration,
                 'mean_duration_formatted': mean_duration_formatted['formatted'],
                 'mean_duration_raw': mean_duration_formatted['raw'],
@@ -4298,28 +4281,38 @@ def query_trend():
                 'max_duration_raw': max_duration_formatted['raw'],
                 'sum_duration': total_duration,
                 'sum_duration_formatted': format_duration_time(total_duration),
-                'query_hash': pattern_data.get('query_hash', 'unknown'),
-                'pattern_key': pattern_key,
-                'sample_query': sample_query
+                'query_hash': pattern.get('query_hash', 'unknown'),
+                'pattern_key': pattern.get('group_key'),
+                'sample_query': pattern.get('sample_query', '')
             })
-            
+
+            group_key = pattern.get('group_key') or pattern.get('query_hash', 'unknown')
+
+            # Collect executions for this group
+            group_execs = [
+                exec_row for exec_row in executions
+                if exec_row.get('group_key') == group_key
+            ]
+
             # Store query details for modal
-            query_details[pattern_data.get('query_hash', 'unknown')] = {
+            query_details[group_key] = {
                 'namespace': namespace,
                 'operation_type': operation_type,
                 'avg_duration': avg_duration,
-                'execution_count': len(executions),
-                'sample_query': sample_query,
-                'pattern_key': pattern_key,
-                'executions': executions[:10]  # Limit to first 10 for modal
+                'execution_count': execution_count,
+                'sample_query': pattern.get('sample_query', ''),
+                'pattern_key': group_key,
+                'query_hash': pattern.get('query_hash', 'unknown'),
+                'executions': group_execs[:10]
             }
-            
+
             # Prepare scatter plot data
-            for execution in executions:
+            for execution in group_execs:
                 timestamp = execution.get('timestamp')
                 duration = execution.get('duration', 0)
-                query_hash = pattern_data.get('query_hash', 'unknown')
-                
+                query_hash = execution.get('query_hash', pattern.get('query_hash', 'unknown'))
+                operation = execution.get('operation_type') or operation_type
+
                 if timestamp and duration:
                     # Format timestamp for JavaScript
                     if hasattr(timestamp, 'isoformat'):
@@ -4333,17 +4326,17 @@ def query_trend():
                         'timestamp': timestamp_str,
                         'duration': duration,
                         'query_hash': query_hash,
-                        'database': database,
-                        'collection': collection,
+                        'database': execution.get('database', pattern.get('database', 'unknown')),
+                        'collection': execution.get('collection', pattern.get('collection', 'unknown')),
                         'namespace': namespace,
-                        'operation': operation_type,
-                        'pattern_key': pattern_key,
+                        'operation': operation,
+                        'pattern_key': group_key,
                         'avg_duration': avg_duration
                     })
         
         # Sort table data by sum duration (highest first)
         top_queries_data.sort(key=lambda x: x['sum_duration'], reverse=True)
-        
+
         # Sort scatter plot data by timestamp
         trend_data.sort(key=lambda x: x['timestamp'])
         
