@@ -94,6 +94,7 @@ htmlcov/
 coverage.xml
 .pytest_cache/
 bandit-report.json
+testing-workflow/
 
 # Documentation (generated)
 *_SUMMARY.md
