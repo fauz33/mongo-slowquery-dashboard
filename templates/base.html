@@ -19,7 +19,7 @@
             left: 0;
             height: 100vh;
             width: 200px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #495057;
             box-shadow: 2px 0 5px rgba(0,0,0,.1);
             z-index: 1000;
             transition: all 0.3s ease;
@@ -156,15 +156,33 @@
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('slow_query_analysis') }}">
-                    <i class="fas fa-chart-line"></i>
-                    <span>Analysis</span>
+                <a href="{{ url_for('search_user_access') }}">
+                    <i class="fas fa-users"></i>
+                    <span>User Access</span>
                 </a>
             </li>
             <li>
                 <a href="{{ url_for('slow_queries') }}">
-                    <i class="fas fa-hourglass-half"></i>
-                    <span>Slow Queries</span>
+                    <i class="fas fa-list"></i>
+                    <span>Queries List</span>
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('query_trend') }}">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Queries Trends</span>
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('slow_query_analysis') }}">
+                    <i class="fas fa-chart-bar"></i>
+                    <span>Queries Analysis</span>
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('workload_summary') }}">
+                    <i class="fas fa-database"></i>
+                    <span>Workload</span>
                 </a>
             </li>
             <li>
@@ -174,33 +192,9 @@
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('index_suggestions') }}">
-                    <i class="fas fa-lightbulb"></i>
-                    <span>Index Tips</span>
-                </a>
-            </li>
-            <li>
                 <a href="{{ url_for('current_op_analyzer') }}">
-                    <i class="fas fa-cogs"></i>
+                    <i class="fas fa-play-circle"></i>
                     <span>CurrentOp</span>
-                </a>
-            </li>
-            <li>
-                <a href="{{ url_for('workload_summary') }}">
-                    <i class="fas fa-tasks"></i>
-                    <span>Workload</span>
-                </a>
-            </li>
-            <li>
-                <a href="{{ url_for('search_user_access') }}">
-                    <i class="fas fa-users"></i>
-                    <span>User Access</span>
-                </a>
-            </li>
-            <li>
-                <a href="{{ url_for('query_trend') }}">
-                    <i class="fas fa-trending-up"></i>
-                    <span>Trends</span>
                 </a>
             </li>
         </ul>

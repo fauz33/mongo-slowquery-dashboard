@@ -4564,7 +4564,7 @@ class OptimizedMongoLogAnalyzer:
             pass
         return {}
     
-    def analyze_query_patterns(self):
+    def analyze_query_patterns(self, queries=None):
         """Analyze query patterns for insights (Flask app compatibility)"""
         from collections import defaultdict
         import statistics
@@ -4596,8 +4596,11 @@ class OptimizedMongoLogAnalyzer:
             'optimization_potential': 'low'
         })
         
+        # Determine source data
+        source_queries = queries if queries is not None else self.slow_queries
+
         # Group queries by pattern and calculate statistics
-        for query in self.slow_queries:
+        for query in source_queries:
             query_hash = self._generate_synthetic_query_hash(query)
             pattern_key = f"{query.get('database', 'unknown')}.{query.get('collection', 'unknown')}_{query_hash}_{query.get('plan_summary', 'None')}"
             pattern = patterns[pattern_key]
@@ -4665,12 +4668,18 @@ class OptimizedMongoLogAnalyzer:
                 else:
                     pattern['median_duration'] = pattern['avg_duration']
                 
-                # Calculate selectivity
+                pattern['avg_docs_examined'] = pattern['total_docs_examined'] / pattern['total_count'] if pattern['total_count'] else 0
+                pattern['avg_docs_returned'] = pattern['total_returned'] / pattern['total_count'] if pattern['total_count'] else 0
+                pattern['avg_keys_examined'] = pattern['total_keys_examined'] / pattern['total_count'] if pattern['total_count'] else 0
+
+                # Calculate selectivity / index efficiency
                 if pattern['total_docs_examined'] > 0:
                     pattern['avg_selectivity'] = (pattern['total_returned'] / pattern['total_docs_examined']) * 100
+                    pattern['avg_index_efficiency'] = (pattern['total_keys_examined'] / pattern['total_docs_examined']) * 100
                 else:
                     pattern['avg_selectivity'] = 0
-                
+                    pattern['avg_index_efficiency'] = 0
+
                 # Calculate optimization potential based on duration and selectivity
                 if pattern['avg_duration'] > 1000 or pattern['avg_selectivity'] < 10:
                     pattern['optimization_potential'] = 'high'

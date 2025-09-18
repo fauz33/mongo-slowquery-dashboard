@@ -225,11 +225,9 @@
                                              word-break: break-all; background-color: #f8f9fa; padding: 8px; 
                                              border-radius: 4px; border: 1px solid #dee2e6;">{{ result.raw_line }}</div>
                                         <button class="btn btn-sm btn-outline-primary mt-2" 
-                                                data-bs-toggle="modal" 
+                                                data-bs-toggle="modal"
                                                 data-bs-target="#logModal"
                                                 data-log-number="{{ loop.index }}"
-                                                data-file-path="{{ result.file_path if result is mapping else (result.file_path if result.file_path is defined else '') }}"
-                                                data-line-number="{{ result.line_number if result is mapping else (result.line_number if result.line_number is defined else '') }}"
                                                 data-timestamp="{{ timestamp.strftime('%Y-%m-%d %H:%M:%S') if timestamp else 'N/A' }}"
                                                 data-log-entry="{{ (result.raw_line if result is mapping else (result.raw_line if result.raw_line is defined else ''))|e }}">
                                             <i class="fas fa-expand-alt me-1"></i>View Full
@@ -282,19 +280,11 @@
             </div>
             <div class="modal-body">
                 <div class="row mb-3">
-                    <div class="col-md-3">
+                    <div class="col-md-6">
                         <label class="form-label fw-bold">Entry #</label>
                         <p id="modalLogNumber" class="mb-0"></p>
                     </div>
-                    <div class="col-md-3">
-                        <label class="form-label fw-bold">File</label>
-                        <p id="modalFilePath" class="mb-0"></p>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label fw-bold">Line</label>
-                        <p id="modalLineNumber" class="mb-0"></p>
-                    </div>
-                    <div class="col-md-3">
+                    <div class="col-md-6">
                         <label class="form-label fw-bold">Timestamp</label>
                         <p id="modalTimestamp" class="mb-0"></p>
                     </div>
@@ -324,16 +314,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (logModal) {
         logModal.addEventListener('show.bs.modal', function(event) {
             const button = event.relatedTarget;
-            
+
             const logNumber = button.getAttribute('data-log-number');
-            const filePath = button.getAttribute('data-file-path');
-            const lineNumber = button.getAttribute('data-line-number');
             const timestamp = button.getAttribute('data-timestamp');
             const logEntry = button.getAttribute('data-log-entry');
-            
+
             document.getElementById('modalLogNumber').textContent = logNumber;
-            document.getElementById('modalFilePath').textContent = filePath.split('/').pop();
-            document.getElementById('modalLineNumber').textContent = lineNumber;
             document.getElementById('modalTimestamp').textContent = timestamp;
             document.getElementById('fullLogEntry').textContent = logEntry;
         });
