@@ -4,47 +4,37 @@
 
 {% block content %}
 <style>
-.action-btn {
-    width: 36px !important;
-    height: 32px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    border-radius: 6px !important;
-    padding: 0 !important;
-    transition: all 0.2s ease !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
-}
-
-.action-btn:hover {
-    transform: translateY(-1px) !important;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.15) !important;
-}
-
-.table td.actions-column {
-    vertical-align: middle !important;
-    text-align: center !important;
-    width: 80px !important;
-    padding: 8px 4px !important;
-}
-
-.table th.actions-header {
-    text-align: center !important;
-    width: 80px !important;
-}
-
+.table td,
 .table th {
-    text-align: center !important;
     vertical-align: middle !important;
 }
 
-.table td {
-    text-align: center !important;
-    vertical-align: middle !important;
+.table td.numeric,
+.table th.numeric {
+    text-align: right !important;
+    white-space: nowrap !important;
 }
 
-.table td:nth-child(2) {
-    text-align: left !important;
+.table td.actions,
+.table th.actions {
+    text-align: center !important;
+    width: 90px !important;
+}
+
+.badge-plan {
+    font-size: 0.75rem !important;
+    padding: 0.4rem 0.6rem !important;
+    letter-spacing: 0.02em !important;
+}
+
+.badge-index {
+    font-size: 0.7rem !important;
+    padding: 0.3rem 0.5rem !important;
+}
+
+.impact-score {
+    font-weight: 600 !important;
+    color: #495057 !important;
 }
 </style>
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
@@ -119,7 +109,47 @@
                             </button>
                         </div>
                         {% endif %}
-                        <div class="d-flex align-items-end">
+                        <div class="col-md-12 mt-3">
+                            <label class="form-label fw-bold"><i class="fas fa-object-group me-1"></i>Group Results By</label>
+                            <div class="btn-group" role="group" aria-label="Grouping options">
+                                <input type="radio" class="btn-check" name="grouping" id="group_pattern" value="pattern_key"
+                                       {% if grouping_type == 'pattern_key' %}checked{% endif %}>
+                                <label class="btn btn-outline-info btn-sm" for="group_pattern">
+                                    <i class="fas fa-fingerprint me-1"></i>Pattern
+                                </label>
+
+                                <input type="radio" class="btn-check" name="grouping" id="group_namespace" value="namespace"
+                                       {% if grouping_type == 'namespace' %}checked{% endif %}>
+                                <label class="btn btn-outline-info btn-sm" for="group_namespace">
+                                    <i class="fas fa-database me-1"></i>Namespace
+                                </label>
+
+                                <input type="radio" class="btn-check" name="grouping" id="group_hash" value="query_hash"
+                                       {% if grouping_type == 'query_hash' %}checked{% endif %}>
+                                <label class="btn btn-outline-info btn-sm" for="group_hash">
+                                    <i class="fas fa-hashtag me-1"></i>Query Hash
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-1">
+                                Pattern = query hash + namespace + plan. Namespace groups by collection. Query hash groups identical query structures across collections.
+                            </small>
+                        </div>
+                        <div class="col-md-12 mt-3">
+                            <div class="form-check">
+                                <!-- Hidden field to ensure a value is always sent -->
+                                <input type="hidden" name="exclude_system_db" value="0">
+                                <input class="form-check-input" type="checkbox" id="exclude_system_db" name="exclude_system_db" value="1"
+                                       {% if exclude_system_db is not defined or exclude_system_db %}checked{% endif %}>
+                                <label class="form-check-label" for="exclude_system_db">
+                                    <i class="fas fa-database me-1"></i>
+                                    Exclude system databases (admin, config, local, etc.)
+                                </label>
+                                <small class="form-text text-muted d-block">
+                                    System databases: admin, config, local, system, $external, and databases starting with '$'
+                                </small>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-end mt-3">
                             <button type="submit" class="btn btn-primary me-2">
                                 <i class="fas fa-filter me-2"></i>Apply Filters
                             </button>
@@ -142,7 +172,7 @@
                 <div class="row no-gutters align-items-center">
                     <div class="col mr-2">
                         <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Unique Query Patterns</div>
-                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ patterns|length }}</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ pattern_count }}</div>
                     </div>
                     <div class="col-auto">
                         <div class="stats-icon bg-primary text-white">
@@ -237,7 +267,15 @@
             <div class="card-header">
                 <h5 class="mb-0">
                     <i class="fas fa-chart-bar me-2"></i>Query Pattern Performance Analysis
-                    <small class="text-muted ms-2">(Sorted by total impact: avg duration × execution count)</small>
+                    <small class="text-muted ms-2">Grouping:
+                        {% if grouping_type == 'pattern_key' %}
+                            Per query pattern (hash + namespace + plan)
+                        {% elif grouping_type == 'namespace' %}
+                            Per namespace (database.collection)
+                        {% else %}
+                            Per query hash (structure across namespaces)
+                        {% endif %}
+                    </small>
                 </h5>
             </div>
             <div class="card-body">
@@ -250,16 +288,14 @@
                     <table class="table table-hover table-sm">
                         <thead class="table-primary">
                             <tr>
-                                <th style="color: #000; font-weight: bold;">Priority</th>
-                                <th style="color: #000; font-weight: bold;">Collection</th>
-                                <th style="color: #000; font-weight: bold;">Hash</th>
-                                <th style="color: #000; font-weight: bold;">Type</th>
-                                <th style="color: #000; font-weight: bold;">Plan</th>
-                                <th style="color: #000; font-weight: bold;">Executions</th>
-                                <th style="color: #000; font-weight: bold;">Avg Duration</th>
-                                <th style="color: #000; font-weight: bold;">Min/Max</th>
-                                <th style="color: #000; font-weight: bold;">Selectivity</th>
-                                <th class="actions-header" style="color: #000; font-weight: bold;">Actions</th>
+                                <th>Priority</th>
+                                <th>Group Key</th>
+                                <th>Plan & Index</th>
+                                <th class="numeric">Executions</th>
+                                <th class="numeric">Avg & Peak</th>
+                                <th class="numeric">Docs / Selectivity</th>
+                                <th class="numeric">Age Span</th>
+                                <th class="actions">Details</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -275,70 +311,63 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    <div>
-                                        <strong>{{ pattern.database }}.{{ pattern.collection }}</strong>
-                                    </div>
-                                </td>
-                                <td>
-                                    <code class="text-primary">{{ pattern.query_hash[:12] }}...</code>
-                                    <br>
-                                    <small class="text-muted">{{ pattern.query_hash[12:] }}</small>
-                                </td>
-                                <td>
-                                    <span class="badge bg-info">{{ pattern.query_type }}</span>
+                                    <div class="fw-bold">{{ pattern.database }}.{{ pattern.collection }}</div>
+                                    <small class="text-muted">
+                                        {% if grouping_type == 'pattern_key' %}
+                                            Hash {{ pattern.query_hash[:12] }}...
+                                        {% elif grouping_type == 'namespace' %}
+                                            Hash: {{ pattern.query_hash if pattern.query_hash != 'MIXED' else 'Mixed' }}
+                                        {% else %}
+                                            Namespace: {{ pattern.database }}.{{ pattern.collection }}
+                                        {% endif %}
+                                    </small>
                                 </td>
                                 <td>
                                     {% set index_info = pattern.plan_summary|extract_index_info %}
                                     {% if index_info.scan_type == 'COLLSCAN' %}
-                                        <span class="badge bg-danger" title="Full collection scan - high optimization priority">
+                                        <span class="badge badge-plan bg-danger" title="Full collection scan">
                                             <i class="fas fa-exclamation-triangle me-1"></i>COLLSCAN
                                         </span>
                                     {% elif index_info.scan_type == 'IXSCAN' %}
-                                        <span class="badge bg-success" title="{{ index_info.display_text }}">
+                                        <span class="badge badge-plan bg-success" title="{{ index_info.display_text }}">
                                             <i class="fas fa-search me-1"></i>IXSCAN
                                         </span>
                                     {% else %}
-                                        <span class="badge bg-secondary" title="{{ index_info.display_text }}">{{ pattern.plan_summary }}</span>
+                                        <span class="badge badge-plan bg-secondary" title="{{ index_info.display_text }}">{{ pattern.plan_summary }}</span>
+                                    {% endif %}
+                                    {% if index_info.index_name %}
+                                        <div><span class="badge badge-index bg-light text-dark">{{ index_info.index_name }}</span></div>
+                                    {% endif %}
+                                    <div><span class="badge bg-info text-uppercase">{{ pattern.query_type if pattern.query_type != 'mixed' else 'MIXED' }}</span></div>
+                                </td>
+                                <td class="numeric">
+                                    <strong>{{ pattern.total_count|int }}</strong>
+                                </td>
+                                <td class="numeric">
+                                    <div class="impact-score">{{ pattern.avg_duration|round|int }} ms</div>
+                                    <small class="text-muted">Max {{ pattern.max_duration|round|int }} ms</small>
+                                </td>
+                                <td class="numeric">
+                                    {% if pattern.total_docs_examined > 0 %}
+                                        <div>{{ (pattern.avg_docs_examined|default(0))|round(0)|int }} docs avg</div>
+                                        <small class="text-muted">
+                                            {{ (pattern.avg_selectivity|default(0))|round(2) }}% sel.
+                                            {% if pattern.get('is_estimated') %}<span class="badge bg-info ms-1">est</span>{% endif %}
+                                        </small>
+                                    {% else %}
+                                        <span class="text-muted">No docs</span>
                                     {% endif %}
                                 </td>
-                                <td class="text-center">
-                                    <strong>{{ pattern.total_count }}</strong>
-                                    <br>
-                                    <small class="text-muted">
-                                        {{ ((pattern.last_seen - pattern.first_seen).total_seconds() / 3600)|round(1) if pattern.first_seen and pattern.last_seen else 0 }}h span
-                                    </small>
-                                </td>
-                                <td class="text-center">
-                                    <strong>{{ pattern.avg_duration|round|int }}ms</strong>
-                                </td>
-                                <td class="text-center">
-                                    <div class="text-success">{{ pattern.min_duration|round|int }}ms</div>
-                                    <div class="text-danger">{{ pattern.max_duration|round|int }}ms</div>
-                                </td>
-                                <td class="text-center">
-                                    {% if pattern.total_docs_examined > 0 %}
-                                        {% if pattern.avg_selectivity == 0 %}
-                                            <div class="text-warning">0.0%</div>
-                                            <small class="text-muted">
-                                                {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
-                                                <br><span class="badge bg-warning">No Results</span>
-                                            </small>
-                                        {% else %}
-                                            <div>{{ pattern.avg_selectivity|round(4) }}%</div>
-                                            <small class="text-muted">
-                                                {{ pattern.total_returned }}/{{ pattern.total_docs_examined }}
-                                                {% if pattern.get('is_estimated') %}
-                                                    <br><span class="badge bg-info">est.</span>
-                                                {% endif %}
-                                            </small>
-                                        {% endif %}
+                                <td class="numeric">
+                                    {% if pattern.first_seen and pattern.last_seen %}
+                                        <div>{{ ((pattern.last_seen - pattern.first_seen).total_seconds() / 3600)|round(1) }} h</div>
+                                        <small class="text-muted">{{ pattern.first_seen.strftime('%Y-%m-%d') }} → {{ pattern.last_seen.strftime('%Y-%m-%d') }}</small>
                                     {% else %}
                                         <span class="text-muted">N/A</span>
-                                        <br><small class="text-muted">No data examined</small>
                                     {% endif %}
                                 </td>
-                                <td class="actions-column">
-                                    <button class="btn btn-sm btn-outline-primary view-details-btn action-btn" 
+                                <td class="actions">
+                                    <button class="btn btn-sm btn-outline-primary view-details-btn" 
                                             data-bs-toggle="modal" 
                                             data-bs-target="#patternModal"
                                             data-pattern-key="{{ pattern_key }}"
@@ -346,18 +375,20 @@
                                             data-query-type="{{ pattern.query_type }}"
                                             data-plan-summary="{{ pattern.plan_summary }}"
                                             data-query-hash="{{ pattern.query_hash }}"
-                                                            data-executions="{{ pattern.total_count }}"
+                                            data-executions="{{ pattern.total_count }}"
                                             data-avg-duration="{{ pattern.avg_duration|round|int }}"
                                             data-min-duration="{{ pattern.min_duration|round|int }}"
                                             data-max-duration="{{ pattern.max_duration|round|int }}"
-                                            data-selectivity="{{ pattern.avg_selectivity|round(1) }}"
-                                            data-total-returned="{{ pattern.total_returned }}"
-                                            data-total-docs-examined="{{ pattern.total_docs_examined }}"
-                                            data-index-efficiency="{{ pattern.avg_index_efficiency|round(1) }}"
+                                            data-selectivity="{{ (pattern.avg_selectivity|default(0))|round(2) }}"
+                                            data-total-returned="{{ pattern.total_returned|default(0) }}"
+                                            data-total-docs-examined="{{ pattern.total_docs_examined|default(0) }}"
+                                            data-avg-docs="{{ (pattern.avg_docs_examined|default(0))|round(1) }}"
+                                            data-index-efficiency="{{ (pattern.avg_index_efficiency|default(0))|round(1) }}"
                                             data-optimization-potential="{{ pattern.optimization_potential }}"
                                             data-slowest-query="{{ pattern.slowest_query_full|e }}"
-                                            title="View Details">
-                                        <i class="fas fa-eye"></i>
+                                            data-grouping="{{ grouping_type }}"
+                                            title="View details">
+                                        <i class="fas fa-info-circle"></i>
                                     </button>
                                 </td>
                             </tr>
@@ -378,27 +409,30 @@
                 <h5 class="modal-title">Query Pattern Details</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
+            
+<div class="modal-body">
                 <div class="row mb-3">
                     <div class="col-md-6">
-                        <h6><i class="fas fa-info-circle me-2"></i>Pattern Information</h6>
+                        <h6><i class="fas fa-info-circle me-2"></i>Pattern Overview</h6>
                         <table class="table table-sm">
                             <tr><td><strong>Collection:</strong></td><td id="modalCollection"></td></tr>
+                            <tr><td><strong>Grouping:</strong></td><td id="modalGrouping"></td></tr>
+                            <tr><td><strong>Group Key:</strong></td><td id="modalGroupKey"></td></tr>
+                            <tr><td><strong>Primary Hash:</strong></td><td id="modalQueryHash"></td></tr>
                             <tr><td><strong>Query Type:</strong></td><td id="modalQueryType"></td></tr>
-                            <tr><td><strong>Plan Summary:</strong></td><td id="modalPlanSummary"></td></tr>
-                            <tr><td><strong>Query Hash:</strong></td><td id="modalQueryHash"></td></tr>
                         </table>
                     </div>
                     <div class="col-md-6">
-                        <h6><i class="fas fa-clock me-2"></i>Performance Statistics</h6>
+                        <h6><i class="fas fa-clipboard-list me-2"></i>Plan & Performance</h6>
                         <table class="table table-sm">
+                            <tr><td><strong>Plan Summary:</strong></td><td id="modalPlanSummary"></td></tr>
                             <tr><td><strong>Total Executions:</strong></td><td id="modalExecutions"></td></tr>
                             <tr><td><strong>Avg Duration:</strong></td><td id="modalAvgDuration"></td></tr>
                             <tr><td><strong>Min/Max Duration:</strong></td><td id="modalMinMaxDuration"></td></tr>
+                            <tr><td><strong>Avg Docs Examined:</strong></td><td id="modalAvgDocs"></td></tr>
                         </table>
                     </div>
                 </div>
-                
                 <div class="row mb-3">
                     <div class="col-12">
                         <h6><i class="fas fa-chart-pie me-2"></i>Efficiency Metrics</h6>
@@ -406,8 +440,8 @@
                             <div class="col-md-4">
                                 <div class="card">
                                     <div class="card-body text-center">
+                                        <div class="text-uppercase text-muted mb-1" style="font-size: 0.7rem;">Selectivity</div>
                                         <div class="h4 mb-0" id="modalSelectivity">-</div>
-                                        <small class="text-muted">Selectivity</small>
                                         <div><small id="modalSelectivityDetail">-</small></div>
                                     </div>
                                 </div>
@@ -415,26 +449,25 @@
                             <div class="col-md-4">
                                 <div class="card">
                                     <div class="card-body text-center">
+                                        <div class="text-uppercase text-muted mb-1" style="font-size: 0.7rem;">Index Efficiency</div>
                                         <div class="h4 mb-0" id="modalIndexEfficiency">-</div>
-                                        <small class="text-muted">Index Efficiency</small>
                                     </div>
                                 </div>
                             </div>
                             <div class="col-md-4">
                                 <div class="card">
                                     <div class="card-body text-center">
+                                        <div class="text-uppercase text-muted mb-1" style="font-size: 0.7rem;">Optimization Potential</div>
                                         <div class="h4 mb-0" id="modalOptimizationPotential">-</div>
-                                        <small class="text-muted">Optimization Potential</small>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                
                 <div class="mb-3">
-                    <h6><i class="fas fa-code me-2"></i>Slowest Query</h6>
-                    <pre id="modalSampleQuery" class="bg-light p-3 rounded" style="max-height: 200px; overflow-y: auto; font-size: 12px;"></pre>
+                    <h6><i class="fas fa-code me-2"></i>Representative Query</h6>
+                    <pre id="modalSampleQuery" class="bg-light p-3 rounded" style="max-height: 220px; overflow-y: auto; font-size: 12px;"></pre>
                 </div>
             </div>
             <div class="modal-footer">
@@ -449,74 +482,113 @@
 {% endif %}
 
 <script>
-// Global variable for copy functionality
-let currentPatternQuery = '';
+    window.currentPatternQuery = '';
+    // Pattern modal handling
+    const detailButtons = document.querySelectorAll('.view-details-btn');
+    const modalCollection = document.getElementById('modalCollection');
+    const modalGrouping = document.getElementById('modalGrouping');
+    const modalGroupKey = document.getElementById('modalGroupKey');
+    const modalQueryHash = document.getElementById('modalQueryHash');
+    const modalQueryType = document.getElementById('modalQueryType');
+    const modalPlanSummary = document.getElementById('modalPlanSummary');
+    const modalExecutions = document.getElementById('modalExecutions');
+    const modalAvgDuration = document.getElementById('modalAvgDuration');
+    const modalMinMaxDuration = document.getElementById('modalMinMaxDuration');
+    const modalAvgDocs = document.getElementById('modalAvgDocs');
+    const modalSelectivity = document.getElementById('modalSelectivity');
+    const modalSelectivityDetail = document.getElementById('modalSelectivityDetail');
+    const modalIndexEfficiency = document.getElementById('modalIndexEfficiency');
+    const modalOptimizationPotential = document.getElementById('modalOptimizationPotential');
+    const modalSampleQuery = document.getElementById('modalSampleQuery');
 
-document.addEventListener('DOMContentLoaded', function() {
-    // Modal functionality
-    const patternModal = document.getElementById('patternModal');
-    const viewDetailsButtons = document.querySelectorAll('.view-details-btn');
-    
-    viewDetailsButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            // Get data from individual attributes
-            const collection = this.getAttribute('data-collection');
-            const queryType = this.getAttribute('data-query-type');
-            const planSummary = this.getAttribute('data-plan-summary');
-            const queryHash = this.getAttribute('data-query-hash');
-            const executions = this.getAttribute('data-executions');
-            const avgDuration = this.getAttribute('data-avg-duration');
-            const minDuration = this.getAttribute('data-min-duration');
-            const maxDuration = this.getAttribute('data-max-duration');
-            const selectivity = parseFloat(this.getAttribute('data-selectivity'));
-            const totalReturned = this.getAttribute('data-total-returned');
-            const totalDocsExamined = this.getAttribute('data-total-docs-examined');
-            const indexEfficiency = parseFloat(this.getAttribute('data-index-efficiency'));
-            const optimizationPotential = this.getAttribute('data-optimization-potential');
-            const slowestQuery = this.getAttribute('data-slowest-query');
-            
-            // Populate modal with pattern data
-            document.getElementById('modalCollection').textContent = collection;
-            document.getElementById('modalQueryType').innerHTML = `<span class="badge bg-info">${queryType}</span>`;
-            
-            const planBadgeClass = planSummary === 'COLLSCAN' ? 'bg-danger' : 
-                                  planSummary === 'IXSCAN' ? 'bg-success' : 'bg-secondary';
-            document.getElementById('modalPlanSummary').innerHTML = `<span class="badge ${planBadgeClass}">${planSummary}</span>`;
-            
-            document.getElementById('modalQueryHash').textContent = queryHash;
-            
-            // Performance statistics
-            document.getElementById('modalExecutions').textContent = executions;
-            document.getElementById('modalAvgDuration').textContent = `${avgDuration}ms`;
-            document.getElementById('modalMinMaxDuration').textContent = `${minDuration}ms / ${maxDuration}ms`;
-            
-            // Efficiency metrics
-            if (selectivity !== null && selectivity > 0 && totalDocsExamined > 0) {
-                document.getElementById('modalSelectivity').textContent = `${selectivity.toFixed(4)}%`;
-                document.getElementById('modalSelectivityDetail').textContent = `${totalReturned}/${totalDocsExamined} docs`;
+    const groupingLabels = {
+        'pattern_key': 'Pattern',
+        'namespace': 'Namespace',
+        'query_hash': 'Query Hash'
+    };
+
+    detailButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const dataset = btn.dataset;
+            const collection = dataset.collection || 'unknown';
+            const groupingType = dataset.grouping || 'pattern_key';
+            const patternKey = dataset.patternKey || '';
+            const queryType = dataset.queryType || 'unknown';
+            const planSummary = dataset.planSummary || 'unknown';
+            const queryHash = dataset.queryHash || 'unknown';
+            const executions = Number(dataset.executions || 0);
+            const avgDuration = Number(dataset.avgDuration || 0);
+            const minDuration = Number(dataset.minDuration || 0);
+            const maxDuration = Number(dataset.maxDuration || 0);
+            const avgDocsExamined = Number(dataset.avgDocs || 0);
+            const selectivity = parseFloat(dataset.selectivity || '0');
+            const totalReturned = Number(dataset.totalReturned || 0);
+            const totalDocsExamined = Number(dataset.totalDocsExamined || 0);
+            const indexEfficiency = parseFloat(dataset.indexEfficiency || '0');
+            const optimizationPotential = dataset.optimizationPotential || 'low';
+            const slowestQuery = dataset.slowestQuery || 'Query text not available';
+
+            modalCollection.textContent = collection;
+            const groupingLabel = groupingLabels[groupingType] || groupingType;
+            modalGrouping.innerHTML = `<span class="badge bg-secondary text-uppercase">${groupingLabel}</span>`;
+            modalGroupKey.textContent = patternKey;
+            modalQueryHash.textContent = queryHash;
+            modalQueryType.innerHTML = `<span class="badge bg-info">${queryType}</span>`;
+
+            let planClass = 'badge bg-secondary';
+            if (planSummary === 'COLLSCAN') planClass = 'badge bg-danger';
+            if (planSummary === 'IXSCAN') planClass = 'badge bg-success';
+            modalPlanSummary.innerHTML = `<span class="${planClass}">${planSummary}</span>`;
+
+            modalExecutions.textContent = executions.toLocaleString();
+            modalAvgDuration.textContent = `${Math.round(avgDuration)} ms`;
+            modalMinMaxDuration.textContent = `${Math.round(minDuration)} ms / ${Math.round(maxDuration)} ms`;
+            modalAvgDocs.textContent = avgDocsExamined > 0 ? `${avgDocsExamined.toFixed(1)} docs` : 'N/A';
+
+            if (totalDocsExamined > 0 && selectivity > 0) {
+                modalSelectivity.textContent = `${selectivity.toFixed(2)}%`;
             } else {
-                document.getElementById('modalSelectivity').textContent = 'N/A';
-                document.getElementById('modalSelectivityDetail').textContent = `${totalReturned}/${totalDocsExamined} docs`;
+                modalSelectivity.textContent = 'N/A';
             }
-            
-            document.getElementById('modalIndexEfficiency').textContent = indexEfficiency > 0 ? 
-                `${indexEfficiency}%` : 'N/A';
-            
-            const potentialBadgeClass = optimizationPotential === 'high' ? 'bg-danger' : 
-                                       optimizationPotential === 'medium' ? 'bg-warning' : 'bg-success';
-            document.getElementById('modalOptimizationPotential').innerHTML = `<span class="badge ${potentialBadgeClass}">${optimizationPotential}</span>`;
-            
-            // Slowest query
-            document.getElementById('modalSampleQuery').textContent = slowestQuery;
-            currentPatternQuery = slowestQuery;
+            modalSelectivityDetail.textContent = `${totalReturned.toLocaleString()}/${totalDocsExamined.toLocaleString()} docs total`;
+
+            modalIndexEfficiency.textContent = indexEfficiency > 0 ? `${indexEfficiency.toFixed(1)}%` : 'N/A';
+
+            const badgeClass = optimizationPotential === 'high' ? 'bg-danger' :
+                               optimizationPotential === 'medium' ? 'bg-warning' : 'bg-success';
+            modalOptimizationPotential.innerHTML = `<span class="badge ${badgeClass}">${optimizationPotential}</span>`;
+
+            modalSampleQuery.textContent = slowestQuery;
+            window.currentPatternQuery = slowestQuery;
         });
     });
-    
-    // Export functionality
+
+// Export functionality
     const exportBtn = document.getElementById('exportBtn');
     if (exportBtn) {
         exportBtn.addEventListener('click', function() {
-            const exportUrl = '{{ url_for("export_query_analysis") }}';
+            // Build export URL with current filter parameters
+            const params = new URLSearchParams();
+
+            const startDate = document.getElementById('start_date').value;
+            const endDate = document.getElementById('end_date').value;
+            const excludeSystemDb = document.getElementById('exclude_system_db').checked;
+            const groupingRadio = document.querySelector('input[name="grouping"]:checked');
+
+            if (startDate) params.set('start_date', startDate);
+            if (endDate) params.set('end_date', endDate);
+
+            // Handle checkbox state with hidden field approach
+            params.append('exclude_system_db', '0');  // Always add the base value
+            if (excludeSystemDb) {
+                params.append('exclude_system_db', '1');  // Add checked value if checked
+            }
+
+            if (groupingRadio) {
+                params.set('grouping', groupingRadio.value);
+            }
+
+            const exportUrl = '{{ url_for("export_query_analysis") }}' + '?' + params.toString();
             window.open(exportUrl, '_blank');
         });
     }
@@ -524,15 +596,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Copy query function
 function copyPatternQuery(event) {
-    console.log('Copy button clicked, currentPatternQuery:', currentPatternQuery ? 'Query loaded' : 'Empty');
+    const queryText = window.currentPatternQuery || '';
+    console.log('Copy button clicked, currentPatternQuery:', queryText ? 'Query loaded' : 'Empty');
     
-    if (!currentPatternQuery) {
+    if (!queryText) {
         alert('No query to copy. Please click "View Details" first.');
         return;
     }
     
     if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(currentPatternQuery).then(function() {
+        navigator.clipboard.writeText(queryText).then(function() {
             const btn = event.target.closest('button');
             const originalText = btn.innerHTML;
             btn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';

@@ -1,41 +1,41 @@
-# Core Flask framework and extensions
-Flask==2.3.3
-Werkzeug==2.3.7
-Jinja2==3.1.2
+# MongoDB Log Analyzer - Core Dependencies
+# ===========================================
 
-# Data processing and analysis
-pandas==2.0.3
-python-dateutil==2.8.2
+# Web Framework
+Flask>=2.3.0,<3.0.0
+Werkzeug>=2.3.0,<3.0.0
 
-# HTTP requests (used in comprehensive testing)
-requests==2.31.0
+# Note: Jinja2 is automatically installed with Flask
+# Note: All other dependencies are Python standard library modules
 
-# Standard library modules (included with Python, listed for documentation)
-# os - File system operations
-# re - Regular expressions  
-# json - JSON parsing and generation
+# Standard Library Modules Used (included with Python 3.7+):
+# ----------------------------------------------------------
+# os - File system operations and path handling
+# re - Regular expressions for log parsing
+# json - JSON parsing and generation for query data
 # hashlib - Hash generation for query fingerprinting
-# datetime - Date and time handling
-# collections - defaultdict, deque, Counter for data aggregation
-# tempfile - Temporary file handling
-# io - Input/output operations
-# zipfile - ZIP file handling for log uploads
-# tarfile - TAR file handling for log uploads  
-# gzip - GZIP file handling for log uploads
-# shutil - High-level file operations
-# sqlite3 - SQLite database operations
-# threading - Multi-threading for optimized processing
-# concurrent.futures - ThreadPoolExecutor for parallel processing
-# mmap - Memory-mapped file access for large log processing
-# queue - Queue operations for thread communication
+# datetime - Date and time handling and parsing
+# collections - defaultdict, deque, Counter for data structures
+# zipfile - ZIP archive handling for compressed log files
+# tarfile - TAR archive handling for compressed log files
+# gzip - GZIP file handling for compressed log files
+# shutil - High-level file and directory operations
+# sqlite3 - SQLite database operations for data persistence
+# threading - Multi-threading for concurrent processing
+# concurrent.futures - ThreadPoolExecutor for parallel log processing
+# mmap - Memory-mapped file access for efficient large file processing
+# queue - Thread-safe queue operations for inter-thread communication
 # calendar - Calendar utilities for timestamp processing
-# sys - System-specific parameters and functions
-# subprocess - Subprocess management for testing framework
+# time - Time-related functions for performance monitoring
 
-# Optional: For production deployment
-# gunicorn==21.2.0
-# uWSGI==2.0.21
+# Optional Production Dependencies:
+# ---------------------------------
+# For production deployment, consider adding:
+# gunicorn>=21.0.0  # WSGI HTTP Server
+# python-dotenv>=1.0.0  # Environment variable management
 
-# Optional: For enhanced logging and monitoring
-# flask-cors==4.0.0
-# python-dotenv==1.0.0
+# Optional Testing Dependencies (testing-workflow/):
+# --------------------------------------------------
+# These are only needed if using the comprehensive testing framework:
+# requests>=2.31.0  # HTTP requests for web UI testing
+# psutil>=5.9.0  # System monitoring for performance tests

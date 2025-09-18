@@ -53,7 +53,7 @@ fixed_log*.txt
 *_test_*.py
 *_comparison*.py
 *_performance*.py
-optimized_*.py
+# Note: optimized_analyzer.py is the main analysis engine and should be tracked
 
 # Application runtime
 instance/

@@ -100,6 +100,131 @@ def _passes_plan_filter(query, selected_plan):
         return False
     return True
 
+
+def _aggregate_patterns_by_group(patterns, grouping_type='pattern_key'):
+    """Aggregate slow query patterns according to grouping strategy."""
+    allowed = {'pattern_key', 'namespace', 'query_hash'}
+    if grouping_type not in allowed:
+        grouping_type = 'pattern_key'
+
+    if grouping_type == 'pattern_key':
+        return patterns
+
+    priority_rank = {'low': 0, 'medium': 1, 'high': 2}
+    aggregated = {}
+
+    for original_key, pattern in patterns.items():
+        database = pattern.get('database', 'unknown')
+        collection = pattern.get('collection', 'unknown')
+        query_hash = pattern.get('query_hash', 'unknown')
+
+        if grouping_type == 'namespace':
+            group_key = f"{database}.{collection}"
+        else:  # query_hash
+            group_key = query_hash
+
+        agg = aggregated.get(group_key)
+        if agg is None:
+            agg = pattern.copy()
+            agg['pattern_key'] = group_key
+            agg['grouping_type'] = grouping_type
+            agg['_total_duration'] = agg.get('avg_duration', 0) * agg.get('total_count', 0)
+            agg['_total_index_eff'] = agg.get('avg_index_efficiency', 0) * agg.get('total_count', 0)
+            agg['_priority_rank'] = priority_rank.get(agg.get('optimization_potential', 'low'), 0)
+            agg['_max_duration'] = agg.get('max_duration', 0)
+
+            if grouping_type == 'namespace':
+                agg['database'] = database
+                agg['collection'] = collection
+                agg['query_hash'] = query_hash
+            else:  # query_hash grouping
+                agg['database'] = database
+                agg['collection'] = collection
+                agg['query_hash'] = group_key
+
+            aggregated[group_key] = agg
+            continue
+
+        # Update aggregate metrics
+        executions = pattern.get('total_count', 0)
+        agg['_total_duration'] += pattern.get('avg_duration', 0) * executions
+        agg['_total_index_eff'] += pattern.get('avg_index_efficiency', 0) * executions
+        agg['total_count'] += executions
+        agg['min_duration'] = min(agg.get('min_duration', pattern.get('min_duration', 0)), pattern.get('min_duration', 0))
+        agg['max_duration'] = max(agg.get('max_duration', pattern.get('max_duration', 0)), pattern.get('max_duration', 0))
+        agg['total_docs_examined'] = agg.get('total_docs_examined', 0) + pattern.get('total_docs_examined', 0)
+        agg['total_returned'] = agg.get('total_returned', 0) + pattern.get('total_returned', 0)
+        agg['total_keys_examined'] = agg.get('total_keys_examined', 0) + pattern.get('total_keys_examined', 0)
+        agg['complexity_score'] = max(agg.get('complexity_score', 0), pattern.get('complexity_score', 0))
+        agg['median_duration'] = max(agg.get('median_duration', 0), pattern.get('median_duration', 0))
+
+        first_seen = pattern.get('first_seen')
+        last_seen = pattern.get('last_seen')
+        if first_seen and (not agg.get('first_seen') or first_seen < agg['first_seen']):
+            agg['first_seen'] = first_seen
+        if last_seen and (not agg.get('last_seen') or last_seen > agg['last_seen']):
+            agg['last_seen'] = last_seen
+
+        rank = priority_rank.get(pattern.get('optimization_potential', 'low'), 0)
+        if rank > agg['_priority_rank']:
+            agg['optimization_potential'] = pattern.get('optimization_potential', 'low')
+            agg['_priority_rank'] = rank
+
+        if grouping_type == 'namespace':
+            if agg.get('query_hash') != pattern.get('query_hash'):
+                agg['query_hash'] = 'MIXED'
+            if agg.get('plan_summary') != pattern.get('plan_summary'):
+                agg['plan_summary'] = 'MIXED'
+        else:  # query_hash grouping
+            if agg.get('database') != database:
+                agg['database'] = 'MIXED'
+            if agg.get('collection') != collection:
+                agg['collection'] = 'MIXED'
+            if agg.get('plan_summary') != pattern.get('plan_summary'):
+                agg['plan_summary'] = 'MIXED'
+
+        if agg.get('query_type') != pattern.get('query_type'):
+            agg['query_type'] = 'mixed'
+
+        if pattern.get('max_duration', 0) > agg.get('_max_duration', 0):
+            agg['_max_duration'] = pattern.get('max_duration', 0)
+            agg['sample_query'] = pattern.get('sample_query')
+            agg['slowest_query_full'] = pattern.get('slowest_query_full')
+            agg['slowest_execution_timestamp'] = pattern.get('slowest_execution_timestamp')
+
+        if pattern.get('is_estimated'):
+            agg['is_estimated'] = True
+
+    # Finalise aggregates
+    for agg in aggregated.values():
+        total_count = max(agg.get('total_count', 0), 1)
+        agg['avg_duration'] = agg['_total_duration'] / total_count
+        agg['avg_index_efficiency'] = agg['_total_index_eff'] / total_count if total_count else 0
+
+        total_docs_examined = agg.get('total_docs_examined', 0)
+        total_returned = agg.get('total_returned', 0)
+        if total_docs_examined > 0:
+            agg['avg_selectivity'] = (total_returned / total_docs_examined) * 100
+        else:
+            agg['avg_selectivity'] = 0
+
+        agg['avg_docs_examined'] = total_docs_examined / total_count if total_count else 0
+        agg['avg_docs_returned'] = total_returned / total_count if total_count else 0
+        agg['avg_keys_examined'] = agg.get('total_keys_examined', 0) / total_count if total_count else 0
+        agg['median_duration'] = agg.get('median_duration', agg['avg_duration'])
+
+        agg.pop('_total_duration', None)
+        agg.pop('_total_index_eff', None)
+        agg.pop('_priority_rank', None)
+        agg.pop('_max_duration', None)
+
+    sorted_items = sorted(
+        aggregated.items(),
+        key=lambda item: item[1].get('avg_duration', 0) * item[1].get('total_count', 0),
+        reverse=True
+    )
+    return dict(sorted_items)
+
 def _clean_query_text_for_export(query_text):
     """Convert query text to parsed JSON object for clean export"""
     if not query_text or query_text == 'N/A':
@@ -288,52 +413,73 @@ def allowed_file(filename):
 def is_archive_file(filename):
     """Check if file is a compressed archive"""
     filename_lower = filename.lower()
-    return (filename_lower.endswith('.zip') or 
-            filename_lower.endswith('.tar') or 
-            filename_lower.endswith('.tar.gz') or
-            filename_lower.endswith('.gz'))
+    return (
+        filename_lower.endswith('.zip') or 
+        filename_lower.endswith('.tar') or 
+        filename_lower.endswith('.tar.gz') or
+        filename_lower.endswith('.tgz') or
+        filename_lower.endswith('.tar.bz2') or
+        filename_lower.endswith('.tbz2') or
+        filename_lower.endswith('.tbz') or
+        (filename_lower.endswith('.gz') and not filename_lower.endswith('.tar.gz'))
+    )
 
 def extract_archive(archive_path, extract_to_dir):
     """Extract archive and return list of extracted log files"""
     extracted_files = []
-    
+
     try:
         # Create extraction directory
         os.makedirs(extract_to_dir, exist_ok=True)
-        
+
+        def unique_path(directory, filename):
+            base_name, ext = os.path.splitext(filename)
+            candidate = filename
+            counter = 1
+            while os.path.exists(os.path.join(directory, candidate)):
+                candidate = f"{base_name}_{counter}{ext}"
+                counter += 1
+            return os.path.join(directory, candidate)
+
         if archive_path.lower().endswith('.zip'):
             # Handle ZIP files
             with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                for member in zip_ref.namelist():
-                    # Only extract files that look like log files
-                    member_name = member.split('/')[-1]  # Get filename without path
-                    if (is_log_file(member_name) and 
-                        not member.startswith('__MACOSX/') and 
-                        member_name):  # Skip directories and empty names
-                        
-                        zip_ref.extract(member, extract_to_dir)
-                        extracted_path = os.path.join(extract_to_dir, member)
-                        if os.path.isfile(extracted_path):
-                            extracted_files.append(extracted_path)
-        
-        elif archive_path.lower().endswith(('.tar', '.tar.gz')):
-            # Handle TAR and TAR.GZ files
-            mode = 'r:gz' if archive_path.lower().endswith('.tar.gz') else 'r'
+                for info in zip_ref.infolist():
+                    if info.is_dir():
+                        continue
+                    member_name = os.path.basename(info.filename)
+                    if not member_name:
+                        continue
+                    if not is_log_file(member_name):
+                        continue
+                    target_path = unique_path(extract_to_dir, member_name)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    with zip_ref.open(info) as src, open(target_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted_files.append(target_path)
+
+        elif archive_path.lower().endswith(('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tbz')):
+            # Handle TAR variants
+            if archive_path.lower().endswith(('.tar.gz', '.tgz')):
+                mode = 'r:gz'
+            elif archive_path.lower().endswith(('.tar.bz2', '.tbz2', '.tbz')):
+                mode = 'r:bz2'
+            else:
+                mode = 'r'
             with tarfile.open(archive_path, mode) as tar_ref:
                 for member in tar_ref.getmembers():
                     member_name = member.name.split('/')[-1]  # Get filename without path
                     if (member.isfile() and 
                         is_log_file(member_name) and
                         member_name):  # Skip directories and empty names
-                        
-                        # Extract with safe name (avoid directory traversal)
-                        safe_name = os.path.basename(member.name)
-                        member.name = safe_name
-                        tar_ref.extract(member, extract_to_dir)
-                        extracted_path = os.path.join(extract_to_dir, safe_name)
-                        if os.path.isfile(extracted_path):
-                            extracted_files.append(extracted_path)
-        
+                        target_path = unique_path(extract_to_dir, member_name)
+                        extracted_file = tar_ref.extractfile(member)
+                        if extracted_file:
+                            with open(target_path, 'wb') as dst:
+                                shutil.copyfileobj(extracted_file, dst)
+                            extracted_files.append(target_path)
+
+
         elif archive_path.lower().endswith('.gz') and not archive_path.lower().endswith('.tar.gz'):
             # Handle standalone .gz files
             with gzip.open(archive_path, 'rb') as gz_file:
@@ -344,12 +490,12 @@ def extract_archive(archive_path, extract_to_dir):
                 else:
                     output_name = base_name + '.extracted'
                 
-                output_path = os.path.join(extract_to_dir, output_name)
-                
+                output_path = unique_path(extract_to_dir, output_name)
+
                 # Write decompressed content
                 with open(output_path, 'wb') as output_file:
                     shutil.copyfileobj(gz_file, output_file)
-                
+
                 # Only add if it looks like a log file
                 if is_log_file(output_name):
                     extracted_files.append(output_path)
@@ -1964,6 +2110,9 @@ class MongoLogAnalyzer:
             pattern['total_docs_examined'] = sum(docs_examined)
             pattern['total_keys_examined'] = sum(keys_examined) 
             pattern['total_returned'] = sum(returned)
+            pattern['avg_docs_examined'] = pattern['total_docs_examined'] / pattern['total_count'] if pattern['total_count'] else 0
+            pattern['avg_docs_returned'] = pattern['total_returned'] / pattern['total_count'] if pattern['total_count'] else 0
+            pattern['avg_keys_examined'] = pattern['total_keys_examined'] / pattern['total_count'] if pattern['total_count'] else 0
             
             # Calculate selectivity (docs returned / docs examined)
             if pattern['total_docs_examined'] > 0:
@@ -2417,6 +2566,8 @@ def upload_file():
     extracted_files = []
     extraction_dir = os.path.join(app.config['TEMP_FOLDER'], f'extracted_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
     
+    archive_counter = 0
+
     try:
         for file in files:
             if file and allowed_file(file.filename):
@@ -2429,8 +2580,16 @@ def upload_file():
                 
                 # Check if it's an archive file
                 if is_archive_file(original_filename):
+                    archive_counter += 1
+                    archive_root = original_filename
+                    for ext in ['.tar.gz', '.tgz', '.tar.bz2', '.tar', '.gz', '.zip']:
+                        if archive_root.lower().endswith(ext):
+                            archive_root = archive_root[:-len(ext)]
+                            break
+                    archive_root = secure_filename(archive_root) or f"archive_{archive_counter}"
+                    target_dir = os.path.join(extraction_dir, f"{archive_root}_{archive_counter:02d}")
                     # Extract archive files to temp directory
-                    extracted = extract_archive(temp_filepath, extraction_dir)
+                    extracted = extract_archive(temp_filepath, target_dir)
                     if extracted:
                         extracted_files.extend(extracted)
                         flash(f'Extracted {len(extracted)} log file(s) from {original_filename}')
@@ -3302,19 +3461,35 @@ def slow_query_analysis():
     # Get filter parameters
     start_date_str = request.args.get('start_date')
     end_date_str = request.args.get('end_date')
-    
+    grouping_type = request.args.get('grouping', 'pattern_key')
+    # Handle checkbox logic - with hidden field, we get multiple values when checked
+    exclude_system_db_values = request.args.getlist('exclude_system_db')
+    if not exclude_system_db_values:
+        exclude_system_db = True  # Default behavior when no parameters
+    else:
+        # If checkbox is checked, we get ['0', '1'], if unchecked we get ['0']
+        exclude_system_db = '1' in exclude_system_db_values
+
+    # Debug output
     # Parse date filters with improved handling
     start_date = parse_date_filter(start_date_str, is_end_date=False)
     end_date = parse_date_filter(end_date_str, is_end_date=True)
-    
-    # Filter slow queries by date range and exclude system databases
+
+    # Filter slow queries by date range and optionally exclude system databases
     filtered_queries = []
-    
+    excluded_count = 0
+    system_db_count = 0
+
     for query in analyzer.slow_queries:
-        # Exclude system databases from analysis
+        # Count system database queries
         if is_system_database(query.get('database')):
+            system_db_count += 1
+
+        # Optionally exclude system databases from analysis
+        if exclude_system_db and is_system_database(query.get('database')):
+            excluded_count += 1
             continue
-            
+
         # Date filters with timezone normalization
         query_timestamp = normalize_datetime_for_comparison(query.get('timestamp'))
         if start_date and query_timestamp and query_timestamp < start_date:
@@ -3322,20 +3497,23 @@ def slow_query_analysis():
         if end_date and query_timestamp and query_timestamp > end_date:
             continue
         filtered_queries.append(query)
-    
-    # Temporarily replace slow_queries for analysis
-    original_queries = analyzer.slow_queries
-    analyzer.slow_queries = filtered_queries
-    
+
     # Get pagination parameters
     page, per_page = get_pagination_params(request)
     
     # Analyze query patterns with filtered data
-    patterns = analyzer.analyze_query_patterns()
-    
-    # Restore original queries
-    analyzer.slow_queries = original_queries
-    
+    try:
+        patterns_dict = analyzer.analyze_query_patterns(filtered_queries)
+    except TypeError:
+        original_queries = analyzer.slow_queries
+        analyzer.slow_queries = filtered_queries
+        try:
+            patterns_dict = analyzer.analyze_query_patterns()
+        finally:
+            analyzer.slow_queries = original_queries
+
+    patterns = _aggregate_patterns_by_group(patterns_dict, grouping_type)
+
     # Calculate summary statistics
     total_executions = sum(pattern['total_count'] for pattern in patterns.values())
     high_priority_count = sum(1 for pattern in patterns.values() if pattern['optimization_potential'] == 'high')
@@ -3348,6 +3526,7 @@ def slow_query_analysis():
         avg_duration = 0
     
     # Convert patterns dict to list for pagination
+    pattern_count = len(patterns)
     patterns_list = list(patterns.items())
     
     # Apply pagination
@@ -3364,6 +3543,9 @@ def slow_query_analysis():
                          high_priority_count=high_priority_count,
                          start_date=start_date_str,
                          end_date=end_date_str,
+                         exclude_system_db=exclude_system_db,
+                         grouping_type=grouping_type,
+                         pattern_count=pattern_count,
                          min_date=min_date.strftime('%Y-%m-%dT%H:%M') if min_date else None,
                          max_date=max_date.strftime('%Y-%m-%dT%H:%M') if max_date else None)
 
@@ -3372,14 +3554,35 @@ def export_query_analysis():
     # Ensure user correlation is done before analysis
     analyzer.correlate_users_with_access()
     
-    # Filter slow queries to exclude system databases
+    # Get filter parameters (same as main analysis page)
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    grouping_type = request.args.get('grouping', 'pattern_key')
+    # Handle checkbox logic - with hidden field, we get multiple values when checked
+    exclude_system_db_values = request.args.getlist('exclude_system_db')
+    if not exclude_system_db_values:
+        exclude_system_db = True  # Default behavior when no parameters
+    else:
+        # If checkbox is checked, we get ['0', '1'], if unchecked we get ['0']
+        exclude_system_db = '1' in exclude_system_db_values
+
+    # Parse date filters
+    start_date = parse_date_filter(start_date_str, is_end_date=False)
+    end_date = parse_date_filter(end_date_str, is_end_date=True)
+
+    # Filter slow queries by date range and optionally exclude system databases
     filtered_queries = []
-    excluded_databases = {'config', 'admin', '$external'}
-    
+
     for query in analyzer.slow_queries:
-        # Exclude system databases from analysis
-        database = query.get('database', '').lower()
-        if database in excluded_databases:
+        # Optionally exclude system databases from analysis
+        if exclude_system_db and is_system_database(query.get('database')):
+            continue
+
+        # Date filters with timezone normalization
+        query_timestamp = normalize_datetime_for_comparison(query.get('timestamp'))
+        if start_date and query_timestamp and query_timestamp < start_date:
+            continue
+        if end_date and query_timestamp and query_timestamp > end_date:
             continue
         filtered_queries.append(query)
     
@@ -3388,15 +3591,18 @@ def export_query_analysis():
     analyzer.slow_queries = filtered_queries
     
     # Analyze query patterns
-    patterns = analyzer.analyze_query_patterns()
-    
+    patterns_dict = analyzer.analyze_query_patterns()
+
     # Restore original queries
     analyzer.slow_queries = original_queries
-    
+
+    patterns = _aggregate_patterns_by_group(patterns_dict, grouping_type)
+
     # Create export data
     export_data = {
         'generated_on': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'total_patterns': len(patterns),
+        'grouping': grouping_type,
         'summary': {
             'total_executions': sum(pattern['total_count'] for pattern in patterns.values()),
             'high_priority_issues': sum(1 for pattern in patterns.values() if pattern['optimization_potential'] == 'high'),
@@ -3404,7 +3610,7 @@ def export_query_analysis():
         },
         'patterns': []
     }
-    
+
     for pattern_key, pattern in patterns.items():
         pattern_export = {
             'pattern_key': pattern_key,
