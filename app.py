@@ -2608,7 +2608,7 @@ def upload_file():
         # Combine temp files and extracted files for analysis
         log_files_to_analyze = []
         for temp_file in temp_files_created:
-            if is_log_file(temp_file):
+            if is_log_file(temp_file) and not is_archive_file(temp_file):
                 log_files_to_analyze.append(temp_file)
         log_files_to_analyze.extend(extracted_files)
         
