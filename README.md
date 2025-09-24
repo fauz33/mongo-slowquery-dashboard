@@ -119,6 +119,15 @@ After installation, verify everything works:
    tail -f logs/app.log  # If logging is configured
    ```
 
+## Feature Flags & Rollback
+
+The v2 DuckDB/Parquet stack can be toggled at runtime via environment variables:
+
+- `ENABLE_V2_UI=0` forces Flask to render the legacy HTML pages (the new `/v2` API endpoints remain available for tooling/testing).
+- `MONGO_SLOWQ_ENABLE_V2=0` disables the v2 blueprint entirely, returning the application to its original SQLite-backed routes.
+
+Set either flag before launching `app.py` or `gunicorn` to roll back quickly if production issues arise.
+
 ## Troubleshooting Installation
 
 ### Common Issues
@@ -230,3 +239,19 @@ If you encounter installation issues:
 2. Ensure all prerequisites are met
 3. Try the virtual environment approach
 4. Check file permissions and directory access
+- **v2 Experimental Stack**
+  - `app_v2.py` hosts the Flask entrypoint for the Parquet/DuckDB backend. Set `SLOWQ_DATASET_ROOT` to point at the generated dataset (default `out/`).
+  - `log_analyzer_v2/cli/analyze.py` ingests logs into the new columnar store; run `python -m log_analyzer_v2.cli.analyze ingest-log <logfile> --out out_v2`.
+  - Lightweight integration tests for the v2 endpoints live in `tests/test_v2_endpoints.py` (requires `pytest`).
+  - Visit `/upload/v2` to ingest new logs, then explore `/dashboard/v2`, `/slow-queries/v2`, `/slow-query-analysis/v2`, `/query-trend/v2`, `/workload-summary/v2`, `/current-op/v2`, `/search-logs/v2`, `/search-user-access/v2`, and `/index-suggestions/v2` to try the client-side dashboards backed by the new JSON APIs (legacy pages remain available). Set `ENABLE_V2_UI=1` in the Flask config to surface the new nav links.
+  - CLI quick reference:
+
+    ```bash
+    python -m log_analyzer_v2.cli.analyze ingest-log /path/to/mongodb.log --out out_v2
+    python -m log_analyzer_v2.cli.analyze status --out out_v2
+    python -m log_analyzer_v2.cli.analyze summaries --out out_v2 --limit 10
+    python -m log_analyzer_v2.cli.analyze clean --out out_v2 --force
+    ```
+
+    Use `status` to review manifest entries, `summaries` for quick workload stats, and `clean` to remove a dataset (helpful for retention/rollovers).
+  - When the flag is enabled, main navigation links for "Queries Analysis" and "Queries Trends" point to the v2 pages while legacy counterparts stay accessible under the “v2” subitems.

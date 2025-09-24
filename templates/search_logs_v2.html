@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Search Logs (v2) - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2"><i class="fas fa-search me-2"></i>Search Logs (v2)</h1>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form id="log-search-form" class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">Search text</label>
+                <input type="text" class="form-control" name="text" required>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Limit</label>
+                <input type="number" class="form-control" name="limit" value="100" min="1" max="1000">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Start epoch</label>
+                <input type="number" class="form-control" name="start_ts" placeholder="optional">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">End epoch</label>
+                <input type="number" class="form-control" name="end_ts" placeholder="optional">
+            </div>
+            <div class="col-md-12 d-flex align-items-center">
+                <div class="form-check me-3">
+                    <input class="form-check-input" type="checkbox" id="case-sensitive" name="case_sensitive">
+                    <label class="form-check-label" for="case-sensitive">Case sensitive</label>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-search me-1"></i>Search
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span>Results</span>
+        <span class="badge bg-secondary" id="log-results-count">0</span>
+    </div>
+    <div class="card-body" id="log-results">
+        <p class="text-muted">No results yet.</p>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/search_logs_v2.js') }}"></script>
+{% endblock %}

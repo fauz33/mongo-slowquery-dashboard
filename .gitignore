@@ -1,4 +1,7 @@
 # MongoDB Log Analyzer Web Application .gitignore
+.pre-commit-config.yaml
+Makefile
+
 
 # Python bytecode and cache
 __pycache__/
@@ -53,13 +56,33 @@ fixed_log*.txt
 *_test_*.py
 *_comparison*.py
 *_performance*.py
-# Note: optimized_analyzer.py is the main analysis engine and should be tracked
+optimized_analyzer.py
 
 # Application runtime
 instance/
 uploads/
 logs/
 temp/
+temp_out/
+temp_test/
+out/
+out/**
+testing_workflow_v2/runs/
+testing_workflow_v2/dashboard/
+testing_workflow_v2/PLAN*/
+testing_workflow_v2/*.plan
+testing_workflow_v2/
+templates/dashboard_results.html
+templates/index_suggestions.html
+templates/query_trend.html
+templates/search_logs.html
+templates/search_user_access.html
+templates/slow_queries.html
+templates/slow_query_analysis.html
+templates/workload_summary.html
+templates/pagination.html
+templates/current_op_analyzer.html
+app.py
 *.pid
 
 # Web app only files
@@ -95,6 +118,11 @@ coverage.xml
 .pytest_cache/
 bandit-report.json
 testing-workflow/
+testing_workflow_v2/*.json
+testing_workflow_v2/*.html
+testing_workflow_v2/*.md
+PLAN_*.md
+plan_*.md
 
 # Documentation (generated)
 *_SUMMARY.md

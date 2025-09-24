@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Workload Summary (v2) - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2"><i class="fas fa-database me-2"></i>Workload Summary (v2)</h1>
+</div>
+
+<div class="row mb-4" id="workload-stats">
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Executions</h6>
+                <h3 id="stat-executions">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Docs Examined</h6>
+                <h3 id="stat-docs-examined">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Docs Returned</h6>
+                <h3 id="stat-docs-returned">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Keys Examined</h6>
+                <h3 id="stat-keys-examined">-</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header"><i class="fas fa-arrow-circle-down me-2"></i>Top Namespaces by Docs Examined</div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush" id="list-docs-examined"></ul>
+            </div>
+        </div>
+        <div class="card mb-4">
+            <div class="card-header"><i class="fas fa-microchip me-2"></i>Top Duration</div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush" id="list-duration"></ul>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header"><i class="fas fa-arrow-circle-up me-2"></i>Top Namespaces by Docs Returned</div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush" id="list-docs-returned"></ul>
+            </div>
+        </div>
+        <div class="card mb-4">
+            <div class="card-header"><i class="fas fa-clock me-2"></i>Top Keys Examined</div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush" id="list-io"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/workload_summary_v2.js') }}"></script>
+{% endblock %}

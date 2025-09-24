@@ -1,41 +1,14 @@
-# MongoDB Log Analyzer - Core Dependencies
-# ===========================================
+# Mongo Slow Query Analyzer – runtime dependencies
 
-# Web Framework
+# Web framework and WSGI helpers
 Flask>=2.3.0,<3.0.0
 Werkzeug>=2.3.0,<3.0.0
 
-# Note: Jinja2 is automatically installed with Flask
-# Note: All other dependencies are Python standard library modules
+# Analytics / storage stack
+pyarrow>=14.0.0
+duckdb>=0.9.2
 
-# Standard Library Modules Used (included with Python 3.7+):
-# ----------------------------------------------------------
-# os - File system operations and path handling
-# re - Regular expressions for log parsing
-# json - JSON parsing and generation for query data
-# hashlib - Hash generation for query fingerprinting
-# datetime - Date and time handling and parsing
-# collections - defaultdict, deque, Counter for data structures
-# zipfile - ZIP archive handling for compressed log files
-# tarfile - TAR archive handling for compressed log files
-# gzip - GZIP file handling for compressed log files
-# shutil - High-level file and directory operations
-# sqlite3 - SQLite database operations for data persistence
-# threading - Multi-threading for concurrent processing
-# concurrent.futures - ThreadPoolExecutor for parallel log processing
-# mmap - Memory-mapped file access for efficient large file processing
-# queue - Thread-safe queue operations for inter-thread communication
-# calendar - Calendar utilities for timestamp processing
-# time - Time-related functions for performance monitoring
-
-# Optional Production Dependencies:
-# ---------------------------------
-# For production deployment, consider adding:
-# gunicorn>=21.0.0  # WSGI HTTP Server
-# python-dotenv>=1.0.0  # Environment variable management
-
-# Optional Testing Dependencies (testing-workflow/):
-# --------------------------------------------------
-# These are only needed if using the comprehensive testing framework:
-# requests>=2.31.0  # HTTP requests for web UI testing
-# psutil>=5.9.0  # System monitoring for performance tests
+# Optional extras (install as needed)
+# numpy>=1.26.0         # vectorised analysis helpers
+# gunicorn>=21.0.0      # production WSGI server
+# python-dotenv>=1.0.0  # load env vars from .env files

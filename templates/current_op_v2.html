@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}CurrentOp Analyzer (v2) - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2"><i class="fas fa-stethoscope me-2"></i>CurrentOp Analyzer (v2)</h1>
+    
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-3">
+            <div class="card-header">Input</div>
+            <div class="card-body">
+                <form id="current-op-form">
+                    <div class="mb-3">
+                        <label class="form-label">db.currentOp() output</label>
+                        <textarea class="form-control" id="current-op-text" rows="12" placeholder="Paste the JSON output"></textarea>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Long running threshold (s)</label>
+                            <input type="number" class="form-control" id="threshold" value="30" min="1">
+                        </div>
+                        <div class="col-md-8 d-flex align-items-end">
+                            <div class="form-check me-3">
+                                <input class="form-check-input" type="checkbox" id="only-active">
+                                <label class="form-check-label" for="only-active">Only active</label>
+                            </div>
+                            <div class="form-check me-3">
+                                <input class="form-check-input" type="checkbox" id="only-waiting">
+                                <label class="form-check-label" for="only-waiting">Waiting for lock</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="only-collscan">
+                                <label class="form-check-label" for="only-collscan">Collection scans</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-play me-1"></i>Analyze
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card mb-3">
+            <div class="card-header">Summary</div>
+            <div class="card-body" id="summary-panel">
+                <p class="text-muted">No analysis yet.</p>
+            </div>
+        </div>
+        <div class="card mb-3">
+            <div class="card-header">Recommendations</div>
+            <div class="card-body" id="recommendations-panel">
+                <p class="text-muted">No recommendations.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header">Operations Overview</div>
+    <div class="card-body" id="operations-panel">
+        <p class="text-muted">Run the analyzer to see operation details.</p>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/current_op_v2.js') }}"></script>
+{% endblock %}

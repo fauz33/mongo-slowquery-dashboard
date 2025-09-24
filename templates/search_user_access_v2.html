@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}User Access (v2) - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2"><i class="fas fa-users me-2"></i>User Access (v2)</h1>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form id="user-access-form" class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">User</label>
+                <input type="text" class="form-control" name="user">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Mechanism</label>
+                <input type="text" class="form-control" name="mechanism">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Result</label>
+                <select class="form-select" name="result">
+                    <option value="">Any</option>
+                    <option value="success">Success</option>
+                    <option value="failure">Failure</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Remote Address</label>
+                <input type="text" class="form-control" name="remote_address">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Start epoch</label>
+                <input type="number" class="form-control" name="start_ts" placeholder="optional">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">End epoch</label>
+                <input type="number" class="form-control" name="end_ts" placeholder="optional">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Limit</label>
+                <input type="number" class="form-control" name="limit" value="200" min="1" max="1000">
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-filter me-1"></i>Apply Filters
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Authentication Events</span>
+        <span class="badge bg-secondary" id="user-access-count">0</span>
+    </div>
+    <div class="card-body" id="user-access-results">
+        <p class="text-muted">No data loaded.</p>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/search_user_access_v2.js') }}"></script>
+{% endblock %}

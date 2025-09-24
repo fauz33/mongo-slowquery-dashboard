@@ -142,57 +142,64 @@
             <h4><i class="fas fa-database me-2"></i>Mongo Analyzer</h4>
         </div>
         
+        {% set endpoint = request.endpoint or '' %}
         <ul class="sidebar-menu">
             <li>
-                <a href="{{ url_for('index') }}">
+                <a href="{{ url_for('upload') }}" class="{{ 'active' if endpoint in ('upload', 'upload_v2') else '' }}">
                     <i class="fas fa-upload"></i>
                     <span>Upload Log</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('dashboard') }}">
+                <a href="{{ url_for('dashboard') }}" class="{{ 'active' if endpoint in ('dashboard', 'dashboard_v2') else '' }}">
                     <i class="fas fa-tachometer-alt"></i>
                     <span>Dashboard</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('search_user_access') }}">
-                    <i class="fas fa-users"></i>
-                    <span>User Access</span>
-                </a>
-            </li>
-            <li>
-                <a href="{{ url_for('slow_queries') }}">
+                <a href="{{ url_for('slow_queries') }}" class="{{ 'active' if endpoint in ('slow_queries', 'slow_queries_v2') else '' }}">
                     <i class="fas fa-list"></i>
-                    <span>Queries List</span>
+                    <span>Slow Queries</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('query_trend') }}">
+                <a href="{{ url_for('query_trend') }}" class="{{ 'active' if endpoint in ('query_trend', 'query_trend_v2') else '' }}">
                     <i class="fas fa-chart-line"></i>
-                    <span>Queries Trends</span>
+                    <span>Query Trend</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('slow_query_analysis') }}">
+                <a href="{{ url_for('slow_query_analysis') }}" class="{{ 'active' if endpoint in ('slow_query_analysis', 'slow_query_analysis_v2') else '' }}">
                     <i class="fas fa-chart-bar"></i>
-                    <span>Queries Analysis</span>
+                    <span>Slow Query Analysis</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('workload_summary') }}">
+                <a href="{{ url_for('workload_summary') }}" class="{{ 'active' if endpoint in ('workload_summary', 'workload_summary_v2') else '' }}">
                     <i class="fas fa-database"></i>
-                    <span>Workload</span>
+                    <span>Workload Summary</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('search_logs') }}">
+                <a href="{{ url_for('search_logs') }}" class="{{ 'active' if endpoint in ('search_logs', 'search_logs_v2') else '' }}">
                     <i class="fas fa-search"></i>
                     <span>Search Logs</span>
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('current_op_analyzer') }}">
+                <a href="{{ url_for('search_user_access') }}" class="{{ 'active' if endpoint in ('search_user_access', 'search_user_access_v2') else '' }}">
+                    <i class="fas fa-users"></i>
+                    <span>User Access</span>
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('index_suggestions') }}" class="{{ 'active' if endpoint in ('index_suggestions', 'index_suggestions_v2') else '' }}">
+                    <i class="fas fa-lightbulb"></i>
+                    <span>Index Suggestions</span>
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('current_op') }}" class="{{ 'active' if endpoint in ('current_op', 'current_op_v2') else '' }}">
                     <i class="fas fa-play-circle"></i>
                     <span>CurrentOp</span>
                 </a>
@@ -227,11 +234,81 @@
                     </div>
                 {% endif %}
             {% endwith %}
+
+            <div id="processingStatusBanner" class="alert alert-info d-none" role="alert">
+                <i class="fas fa-sync-alt me-2"></i>
+                <span class="status-message">Background indexing in progress…</span>
+            </div>
             
             {% block content %}{% endblock %}
         </div>
     </div>
 
     <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+    <script>
+        (function(){
+            const banner = document.getElementById('processingStatusBanner');
+            if (!banner) { return; }
+            const messageSpan = banner.querySelector('.status-message');
+
+            async function pollStatus(){
+                try {
+                    const resp = await fetch('{{ url_for('processing_status') }}', {cache: 'no-store'});
+                    if (!resp.ok) { throw new Error('status HTTP ' + resp.status); }
+                    const data = await resp.json();
+                    const current = data.current_ingest;
+                    if (current) {
+                        const phase = current.phase || 'processing';
+                        const file = current.file || 'current ingest';
+                        const metrics = current.metrics || {};
+                        const parts = [];
+                        if (metrics.slow_queries !== undefined) {
+                            parts.push(`slow=${Number(metrics.slow_queries).toLocaleString()}`);
+                        }
+                        if (metrics.authentications !== undefined) {
+                            parts.push(`auth=${Number(metrics.authentications).toLocaleString()}`);
+                        }
+                        if (metrics.connections !== undefined) {
+                            parts.push(`conn=${Number(metrics.connections).toLocaleString()}`);
+                        }
+                        const detail = parts.length ? ` (${parts.join(' ')})` : '';
+                        messageSpan.textContent = `Ingesting ${file} — ${phase}${detail}`;
+                        banner.classList.remove('d-none');
+                        return;
+                    }
+
+                    const indexBusy = !data.heavy_indexes_ready;
+                    const ftsBusy = data.fts_rebuild_in_progress || !data.fts_ready;
+                    const warmupBusy = data.cache_warmup_in_progress && !data.cache_warmup_ready;
+                    if (indexBusy || ftsBusy || warmupBusy) {
+                        const messages = [];
+                        if (ftsBusy) { messages.push('search index rebuilding'); }
+                        if (warmupBusy) {
+                            const total = data.cache_warmup_total || 0;
+                            const done = data.cache_warmup_completed || 0;
+                            messages.push(`warming dashboards (${done}/${total || '?'})`);
+                        }
+                        if (messages.length) {
+                            messageSpan.textContent = messages.join(' • ');
+                            banner.classList.remove('d-none');
+                        } else {
+                            banner.classList.add('d-none');
+                        }
+                    } else if (data.cache_warmup_error) {
+                        messageSpan.textContent = `cache warm-up issue: ${data.cache_warmup_error}`;
+                        banner.classList.remove('d-none');
+                    } else {
+                        banner.classList.add('d-none');
+                    }
+                } catch (err) {
+                    // silent failure; keep last state
+                } finally {
+                    window.setTimeout(pollStatus, 5000);
+                }
+            }
+
+            pollStatus();
+        })();
+    </script>
 </body>
 </html>

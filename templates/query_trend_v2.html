@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Query Trends (v2) - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2"><i class="fas fa-chart-line me-2"></i>Query Trends (v2)</h1>
+    <div>
+        <div class="btn-group">
+            <button type="button" class="btn btn-sm btn-outline-info" data-grouping="pattern_key">Pattern</button>
+            <button type="button" class="btn btn-sm btn-outline-info" data-grouping="namespace">Namespace</button>
+            <button type="button" class="btn btn-sm btn-outline-info" data-grouping="query_hash">Query Hash</button>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Groups</h6>
+                <h3 id="trend-groups" class="mb-0">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Top Group Duration</h6>
+                <h3 id="trend-top-duration" class="mb-0">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h6 class="text-muted">Total Executions</h6>
+                <h3 id="trend-total-exec" class="mb-0">-</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-7">
+        <div class="card mb-4">
+            <div class="card-header"><i class="fas fa-table me-2"></i>Top Groups</div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height:340px; overflow:auto;">
+                    <table class="table table-striped mb-0" id="trend-summary-table">
+                        <thead>
+                            <tr>
+                                <th>Group</th>
+                                <th class="text-end">Executions</th>
+                                <th class="text-end">Avg Duration</th>
+                                <th class="text-end">Max Duration</th>
+                                <th class="text-end">Total Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card mb-4">
+            <div class="card-header"><i class="fas fa-bullseye me-2"></i>Sample Executions</div>
+            <div class="card-body" style="max-height:380px; overflow:auto;">
+                <ul class="list-group" id="trend-series"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/query_trend_v2.js') }}"></script>
+{% endblock %}

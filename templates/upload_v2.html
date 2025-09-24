@@ -1,0 +1,582 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Log - MongoDB Log Analyzer (v2){% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">MongoDB Log Analyzer</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card card-stats">
+            <div class="card-body text-center py-5">
+                <div class="stats-icon bg-primary text-white mx-auto mb-4">
+                    <i class="fas fa-upload"></i>
+                </div>
+                <h3 class="card-title mb-4">Upload MongoDB Log Files</h3>
+                <p class="text-muted mb-4">
+                    Upload your MongoDB log files to analyze connection patterns, identify users connecting to your database, and track database access.
+                </p>
+                
+                <form id="uploadForm" action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" class="mb-4">
+                    <div class="mb-3">
+                        <label for="files" class="form-label">Choose MongoDB log files or compressed archives</label>
+                        <input type="file" class="form-control form-control-lg" id="files" name="files" multiple required>
+                        <div class="form-text">
+                            <div class="mb-1">You can select multiple files by holding Ctrl (Windows/Linux) or Cmd (Mac)</div>
+                            <div class="small text-muted">
+                                <strong>Accepted files:</strong> 
+                                <span class="badge bg-success me-1">Any file extension</span>
+                                <span class="badge bg-info me-1">Archives (.zip, .tar, .gz)</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" id="uploadBtn" class="btn btn-primary btn-lg">
+                        <i class="fas fa-upload me-2"></i>Upload and Analyze
+                    </button>
+                </form>
+
+                <!-- Progress Modal -->
+                <div class="modal fade" id="progressModal" tabindex="-1" aria-labelledby="progressModalLabel" aria-hidden="true" data-bs-backdrop="static">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="progressModalLabel">
+                                    <i class="fas fa-cogs me-2"></i>Analyzing MongoDB Log Files
+                                </h5>
+                            </div>
+                            <div class="modal-body">
+                                <div class="mb-3">
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span id="currentStatus">Starting analysis...</span>
+                                        <span id="progressPercent">0%</span>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                             id="progressBar" role="progressbar" style="width: 0%" 
+                                             aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                                    </div>
+                                </div>
+
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title">Current File</h6>
+                                                <p id="currentFileName" class="mb-0 small text-muted">Initializing...</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title">Processing Time</h6>
+                                                <p id="processingTime" class="mb-0">0s</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="row mb-3">
+                                    <div class="col-md-4">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title text-primary">Slow Queries</h6>
+                                                <h4 id="slowQueriesCount" class="text-primary">0</h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title text-success">Connections</h6>
+                                                <h4 id="connectionsCount" class="text-success">0</h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title text-info">Authentications</h6>
+                                                <h4 id="authsCount" class="text-info">0</h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-info" id="progressMessages">
+                                    <h6><i class="fas fa-info-circle me-2"></i>Progress Updates</h6>
+                                    <div id="messagesList" style="max-height: 150px; overflow-y: auto;">
+                                        <p class="mb-1"><small class="text-muted">Starting analysis...</small></p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="text-muted small">
+                    <p><strong>Accepted files:</strong> Any file extension - the analyzer will determine if it contains MongoDB log content</p>
+                    <p><strong>File size limit:</strong> No limit - upload files of any size</p>
+                    <p><strong>Archive extraction:</strong> Automatically extracts and processes log files from compressed archives</p>
+                    <p><strong>What we analyze:</strong> Connection events, user authentication, database access, slow queries</p>
+                    <p><strong>Smart detection:</strong> Automatically detects MongoDB log format regardless of filename or extension</p>
+                    <p><strong>Note:</strong> System startup logs (CONTROL, TENANT_M, etc.) contain no operational data. Upload logs with NETWORK, ACCESS, COMMAND events.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Recent Ingests</span>
+                <span class="badge bg-secondary">{{ manifest.ingests|length if manifest.ingests else 0 }}</span>
+            </div>
+            <div class="card-body">
+                {% if manifest.ingests %}
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover table-sm mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th scope="col">#</th>
+                                <th scope="col">Source File</th>
+                                <th scope="col" class="text-end">Slow Queries</th>
+                                <th scope="col" class="text-end">Auth Events</th>
+                                <th scope="col" class="text-end">Connections</th>
+                                <th scope="col">Created</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ingest in manifest.ingests|reverse %}
+                            <tr>
+                                <td>{{ ingest.ingest_id }}</td>
+                                <td>{{ ingest.source_file }}</td>
+                                <td class="text-end">{{ ingest.row_counts.slow_queries | default(0) }}</td>
+                                <td class="text-end">{{ ingest.row_counts.authentications | default(0) }}</td>
+                                <td class="text-end">{{ ingest.row_counts.connections | default(0) }}</td>
+                                <td>{{ ingest.created_at }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted mb-0">No ingests recorded yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-lg-6 mb-4">
+        <div class="card" id="currentIngestCard">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Current Ingest Status</span>
+                <span id="currentIngestPhase" class="badge bg-secondary">Idle</span>
+            </div>
+            <div class="card-body">
+                <p id="currentIngestSummary" class="mb-2 text-muted">No ingest in progress.</p>
+                <div id="currentIngestMetrics" class="small text-muted"></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Recent Ingest Telemetry</span>
+                <span class="badge bg-secondary" id="recentIngestCount">0</span>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th scope="col">File</th>
+                                <th scope="col">Completed</th>
+                                <th scope="col" class="text-end">Slow</th>
+                                <th scope="col" class="text-end">Auth</th>
+                                <th scope="col" class="text-end">Conn</th>
+                                <th scope="col" class="text-end">Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentIngestsBody">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted">No recent ingests</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const form = document.getElementById('uploadForm');
+    if (!form) {
+        return;
+    }
+
+    const uploadButton = document.getElementById('uploadBtn');
+    const progressModalEl = document.getElementById('progressModal');
+    const progressBar = document.getElementById('progressBar');
+    const progressPercent = document.getElementById('progressPercent');
+    const currentStatus = document.getElementById('currentStatus');
+    const currentFileName = document.getElementById('currentFileName');
+    const slowQueriesCount = document.getElementById('slowQueriesCount');
+    const connectionsCount = document.getElementById('connectionsCount');
+    const authsCount = document.getElementById('authsCount');
+    const processingTime = document.getElementById('processingTime');
+    const messagesList = document.getElementById('messagesList');
+
+    const statusEndpoint = '{{ url_for('processing_status') }}';
+    const uploadEndpoint = form.action;
+    const modal = new bootstrap.Modal(progressModalEl);
+    const currentIngestPhase = document.getElementById('currentIngestPhase');
+    const currentIngestSummary = document.getElementById('currentIngestSummary');
+    const currentIngestMetrics = document.getElementById('currentIngestMetrics');
+    const recentIngestsBody = document.getElementById('recentIngestsBody');
+    const recentIngestCount = document.getElementById('recentIngestCount');
+
+    let pollHandle = null;
+    let timerHandle = null;
+    let startTime = null;
+    let startTimestampMs = 0;
+    let activeFile = null;
+    let lastPhase = null;
+    let uploadLogged = false;
+    let ingestCompleted = false;
+
+    window.setInterval(pollStatus, 5000);
+    pollStatus();
+
+    form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        if (!form.checkValidity()) {
+            form.reportValidity();
+            return;
+        }
+
+        const filesInput = document.getElementById('files');
+        if (!filesInput || !filesInput.files || !filesInput.files.length) {
+            addProgressMessage('❗ Please select at least one file to upload.', 'danger');
+            return;
+        }
+
+        startTime = new Date();
+        startTimestampMs = startTime.getTime();
+        activeFile = null;
+        lastPhase = null;
+        uploadLogged = false;
+        ingestCompleted = false;
+
+        resetUI();
+        modal.show();
+
+        if (uploadButton) {
+            uploadButton.disabled = true;
+            uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Uploading...';
+        }
+
+        timerHandle = window.setInterval(updateProcessingTime, 1000);
+        pollHandle = window.setInterval(pollStatus, 1000);
+        pollStatus();
+
+        const formData = new FormData(form);
+        fetch(uploadEndpoint, {
+            method: 'POST',
+            body: formData,
+        })
+            .then((resp) => {
+                if (!resp.ok) {
+                    throw new Error(`Upload HTTP ${resp.status}`);
+                }
+                addProgressMessage('📥 Upload received. Parsing will begin shortly.', 'info');
+                return resp.text();
+            })
+            .catch((error) => {
+                handleError(`Upload failed: ${error.message}`);
+            });
+    });
+
+    async function pollStatus() {
+        try {
+            const resp = await fetch(statusEndpoint, { cache: 'no-store' });
+            if (!resp.ok) {
+                throw new Error(`status HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            updateFromStatus(data);
+        } catch (error) {
+            if (startTime) {
+                addProgressMessage(`⚠️ Status polling error: ${error.message}`, 'warning');
+            } else {
+                console.warn('Status polling error', error);
+            }
+        }
+    }
+
+    function updateFromStatus(status) {
+        updateCurrentIngestCard(status.current_ingest || null);
+        updateRecentIngestTable(status.recent_ingests || []);
+
+        if (!startTime) {
+            return;
+        }
+
+        const lastUpload = status.last_upload;
+        if (lastUpload && !uploadLogged) {
+            const preparedAt = toMillis(lastUpload.prepared_at);
+            if (preparedAt && preparedAt >= startTimestampMs - 2000) {
+                const filename = lastUpload.metrics && lastUpload.metrics.original_filename ? lastUpload.metrics.original_filename : lastUpload.file;
+                addProgressMessage(`📦 Stored upload ${filename}`, 'info');
+                if (lastUpload.metrics && typeof lastUpload.metrics.saved_bytes === 'number') {
+                    const sizeMiB = (lastUpload.metrics.saved_bytes / (1024 * 1024)).toFixed(2);
+                    addProgressMessage(`💾 Saved ${sizeMiB} MiB in ${formatSeconds(lastUpload.metrics.save_seconds || 0)}s`, 'info');
+                }
+                if (lastUpload.metrics && lastUpload.metrics.expanded_count) {
+                    addProgressMessage(`🗂️ Detected ${lastUpload.metrics.expanded_count} log file(s) inside archive`, 'info');
+                }
+                uploadLogged = true;
+            }
+        }
+
+        const current = status.current_ingest;
+        if (current) {
+            const phase = current.phase || 'processing';
+            activeFile = current.file || activeFile;
+            const detail = current.detail || '';
+            if (activeFile) {
+                currentFileName.textContent = activeFile;
+            }
+
+            let progressEstimate = 15;
+            if (phase === 'starting') {
+                progressEstimate = 20;
+            } else if (phase === 'streaming') {
+                progressEstimate = 45;
+            } else if (phase === 'finalizing') {
+                progressEstimate = 85;
+            }
+
+            const metrics = current.metrics || {};
+            if (phase === 'streaming' && metrics.batches) {
+                const extra = Math.min(35, metrics.batches * 2);
+                progressEstimate = Math.max(progressEstimate, 50 + extra);
+            }
+
+            setProgress(progressEstimate);
+            if (phase !== lastPhase || detail) {
+                const message = detail ? `${phase}: ${detail}` : `Phase: ${phase}`;
+                addProgressMessage(`🔄 ${message}`, 'info');
+                lastPhase = phase;
+            }
+
+            if (metrics.slow_queries !== undefined) {
+                slowQueriesCount.textContent = Number(metrics.slow_queries).toLocaleString();
+            }
+            if (metrics.connections !== undefined) {
+                connectionsCount.textContent = Number(metrics.connections).toLocaleString();
+            }
+            if (metrics.authentications !== undefined) {
+                authsCount.textContent = Number(metrics.authentications).toLocaleString();
+            }
+
+            currentStatus.textContent = detail || `Ingest ${phase}...`;
+            return;
+        }
+
+        const lastIngest = status.last_ingest;
+        if (lastIngest && !ingestCompleted) {
+            const completedAt = toMillis(lastIngest.completed_at);
+            if (completedAt && completedAt >= startTimestampMs) {
+                ingestCompleted = true;
+                const success = lastIngest.success !== false;
+                if (success) {
+                    finalizeSuccess(lastIngest);
+                } else {
+                    const error = lastIngest.error || 'Unknown ingest failure';
+                    handleError(`Ingest failed: ${error}`);
+                }
+            }
+        }
+    }
+
+    function updateCurrentIngestCard(current) {
+        if (!currentIngestPhase || !currentIngestSummary || !currentIngestMetrics) {
+            return;
+        }
+        if (!current) {
+            currentIngestPhase.className = 'badge bg-secondary';
+            currentIngestPhase.textContent = 'Idle';
+            currentIngestSummary.textContent = 'No ingest in progress.';
+            currentIngestMetrics.textContent = '';
+            return;
+        }
+
+        const phase = current.phase || 'processing';
+        currentIngestPhase.className = phase === 'finalizing' ? 'badge bg-success' : 'badge bg-warning text-dark';
+        currentIngestPhase.textContent = phase;
+        const file = current.file || 'current ingest';
+        const detail = current.detail ? ` – ${current.detail}` : '';
+        currentIngestSummary.textContent = `${file}${detail}`;
+
+        const metrics = current.metrics || {};
+        const slow = metrics.slow_queries !== undefined ? Number(metrics.slow_queries).toLocaleString() : '–';
+        const auth = metrics.authentications !== undefined ? Number(metrics.authentications).toLocaleString() : '–';
+        const conn = metrics.connections !== undefined ? Number(metrics.connections).toLocaleString() : '–';
+        currentIngestMetrics.textContent = `slow=${slow} auth=${auth} conn=${conn}`;
+    }
+
+    function updateRecentIngestTable(entries) {
+        if (!recentIngestsBody || !recentIngestCount) {
+            return;
+        }
+        const rows = Array.isArray(entries) ? entries.slice(-10).reverse() : [];
+        recentIngestCount.textContent = rows.length.toString();
+        recentIngestsBody.innerHTML = '';
+        if (!rows.length) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 6;
+            cell.className = 'text-center text-muted';
+            cell.textContent = 'No recent ingests';
+            row.appendChild(cell);
+            recentIngestsBody.appendChild(row);
+            return;
+        }
+
+        rows.forEach((entry) => {
+            const row = document.createElement('tr');
+            const completed = entry.completed_at ? new Date(entry.completed_at).toLocaleString() : '—';
+            const counts = entry.row_counts || {};
+            const duration = typeof entry.duration_seconds === 'number' ? `${entry.duration_seconds.toFixed(1)}s` : '—';
+            const values = [
+                entry.file || 'n/a',
+                completed,
+                Number(counts.slow_queries || 0).toLocaleString(),
+                Number(counts.authentications || 0).toLocaleString(),
+                Number(counts.connections || 0).toLocaleString(),
+                duration,
+            ];
+            values.forEach((value, index) => {
+                const cell = document.createElement('td');
+                if (index >= 2 && index <= 4) {
+                    cell.className = 'text-end';
+                } else if (index === 5) {
+                    cell.className = 'text-end text-muted';
+                }
+                cell.textContent = value;
+                row.appendChild(cell);
+            });
+            recentIngestsBody.appendChild(row);
+        });
+    }
+
+    function finalizeSuccess(lastIngest) {
+        const rowCounts = lastIngest.row_counts || {};
+        slowQueriesCount.textContent = Number(rowCounts.slow_queries || 0).toLocaleString();
+        connectionsCount.textContent = Number(rowCounts.connections || 0).toLocaleString();
+        authsCount.textContent = Number(rowCounts.authentications || 0).toLocaleString();
+
+        setProgress(100, 'Analysis complete!');
+        addProgressMessage('✅ Analysis completed successfully.', 'success');
+        stopTimers();
+
+        window.setTimeout(() => {
+            modal.hide();
+            window.location.reload();
+        }, 1500);
+    }
+
+    function handleError(message) {
+        stopTimers();
+        addProgressMessage(`❌ ${message}`, 'danger');
+        currentStatus.textContent = message;
+        setProgress(100);
+        if (uploadButton) {
+            uploadButton.disabled = false;
+            uploadButton.innerHTML = '<i class="fas fa-upload me-2"></i>Upload and Analyze';
+        }
+    }
+
+    function resetUI() {
+        setProgress(5, 'Preparing upload...');
+        currentFileName.textContent = 'Initializing...';
+        slowQueriesCount.textContent = '0';
+        connectionsCount.textContent = '0';
+        authsCount.textContent = '0';
+        processingTime.textContent = '0s';
+        messagesList.innerHTML = '<p class="mb-1"><small class="text-muted">Starting analysis...</small></p>';
+    }
+
+    function setProgress(percent, statusText) {
+        const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+        progressBar.style.width = clamped + '%';
+        progressBar.setAttribute('aria-valuenow', String(clamped));
+        progressPercent.textContent = clamped + '%';
+        if (statusText) {
+            currentStatus.textContent = statusText;
+        }
+    }
+
+    function updateProcessingTime() {
+        if (!startTime) {
+            return;
+        }
+        const elapsedSeconds = Math.max(0, Math.round((Date.now() - startTimestampMs) / 1000));
+        processingTime.textContent = `${elapsedSeconds}s`;
+    }
+
+    function stopTimers() {
+        if (pollHandle) {
+            window.clearInterval(pollHandle);
+            pollHandle = null;
+        }
+        if (timerHandle) {
+            window.clearInterval(timerHandle);
+            timerHandle = null;
+        }
+    }
+
+    function addProgressMessage(message, type = 'info') {
+        const timeStamp = new Date().toLocaleTimeString();
+        const alertClass = type === 'success' ? 'text-success'
+            : type === 'danger' ? 'text-danger'
+            : type === 'warning' ? 'text-warning'
+            : type === 'primary' ? 'text-primary'
+            : 'text-info';
+
+        const entry = document.createElement('p');
+        entry.className = 'mb-1';
+        entry.innerHTML = `<small class="text-muted">[${timeStamp}]</small> <span class="${alertClass}">${message}</span>`;
+        messagesList.appendChild(entry);
+        messagesList.scrollTop = messagesList.scrollHeight;
+    }
+
+    function toMillis(value) {
+        if (!value) {
+            return null;
+        }
+        try {
+            return new Date(value).getTime();
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function formatSeconds(value) {
+        if (!value) {
+            return '0.0';
+        }
+        return value.toFixed(1);
+    }
+})();
+</script>
+{% endblock %}
