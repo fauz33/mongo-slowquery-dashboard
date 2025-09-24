@@ -81,6 +81,7 @@ class AuthenticationRecord:
     result: str
     connection_id: Optional[str]
     remote_address: Optional[str]
+    remote_port: Optional[int]
     app_name: Optional[str]
     error: Optional[str]
     file_path: str
@@ -97,6 +98,7 @@ class AuthenticationRecord:
             "result": self.result,
             "connection_id": self.connection_id,
             "remote_address": self.remote_address,
+            "remote_port": self.remote_port,
             "app_name": self.app_name,
             "error": self.error,
             "file_path": self.file_path,
@@ -114,6 +116,7 @@ class ConnectionRecord:
     event: str  # "accepted" or "ended"
     connection_id: Optional[str]
     remote_address: Optional[str]
+    remote_port: Optional[int]
     connection_count: Optional[int]
     app_name: Optional[str]
     driver: Optional[str]
@@ -128,6 +131,7 @@ class ConnectionRecord:
             "event": self.event,
             "connection_id": self.connection_id,
             "remote_address": self.remote_address,
+            "remote_port": self.remote_port,
             "connection_count": self.connection_count,
             "app_name": self.app_name,
             "driver": self.driver,
@@ -416,12 +420,47 @@ def _match_auth_result(message_lower: str) -> Optional[str]:
 
 
 def _extract_remote(attr: Dict[str, Any]) -> Optional[str]:
-    return (
+    value = (
         attr.get("remote")
         or attr.get("client")
         or attr.get("remoteAddr")
         or attr.get("remote_address")
     )
+    return str(value) if isinstance(value, str) else None
+
+
+def _normalize_remote_ip(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    remote = str(value)
+    if remote.count(":") > 1:
+        if remote.startswith("[") and "]" in remote:
+            return remote.split("]", 1)[0].lstrip("[")
+        return remote
+    return remote.split(":", 1)[0]
+
+
+def _normalize_remote_port(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    remote = str(value)
+    if remote.count(":") > 1:
+        if remote.startswith("[") and "]" in remote:
+            remainder = remote.split("]", 1)[-1]
+            if remainder.startswith(":"):
+                remainder = remainder[1:]
+            try:
+                return int(remainder)
+            except (TypeError, ValueError):
+                return None
+        return None
+    parts = remote.split(":", 1)
+    if len(parts) == 2:
+        try:
+            return int(parts[1])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _extract_connection_id(attr: Dict[str, Any], ctx: Optional[str]) -> Optional[str]:
@@ -585,7 +624,8 @@ def parse_log_file(filepath: Path, *, batch_size: int = 1000) -> Iterator[Parsed
                         ts_epoch=ts_epoch,
                         event=event,
                         connection_id=connection_id,
-                        remote_address=_safe_str(remote),
+                        remote_address=_normalize_remote_ip(remote),
+                        remote_port=_normalize_remote_port(remote),
                         connection_count=connection_count,
                         app_name=_safe_str(attr.get("appName")),
                         driver=_safe_str(attr.get("driver")),
@@ -641,6 +681,8 @@ def parse_log_file(filepath: Path, *, batch_size: int = 1000) -> Iterator[Parsed
                         or attr.get("principalDb")
                     )
 
+                auth_remote = _extract_remote(attr)
+
                 authentications.append(
                     AuthenticationRecord(
                         timestamp=timestamp_iso,
@@ -650,7 +692,8 @@ def parse_log_file(filepath: Path, *, batch_size: int = 1000) -> Iterator[Parsed
                         mechanism=_safe_str(attr.get("mechanism") or attr.get("mechanismName")),
                         result=result,
                         connection_id=_safe_str(_extract_connection_id(attr, ctx)),
-                        remote_address=_safe_str(_extract_remote(attr)),
+                        remote_address=_normalize_remote_ip(auth_remote),
+                        remote_port=_normalize_remote_port(auth_remote),
                         app_name=_safe_str(attr.get("appName")),
                         error=_safe_str(attr.get("error") or attr.get("err")),
                         file_path=str(path),

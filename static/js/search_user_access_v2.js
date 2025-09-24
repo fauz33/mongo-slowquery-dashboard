@@ -27,11 +27,21 @@
 
       resultsContainer.innerHTML = rows
         .map(
-          (row) => `
+          (row) => {
+            const resultText = (row.result || 'unknown').toString();
+            const resultLower = resultText.toLowerCase();
+            const isSuccess = resultLower.includes('success');
+            const isFailure = resultLower.includes('fail');
+            const badgeClass = isSuccess ? 'bg-success' : isFailure ? 'bg-danger' : 'bg-secondary';
+            const iconClass = isSuccess ? 'fas fa-check me-1' : isFailure ? 'fas fa-exclamation-triangle me-1' : '';
+
+            return `
             <div class="mb-3">
               <div class="d-flex justify-content-between align-items-center">
                 <span class="fw-bold">${row.timestamp || 'unknown'}</span>
-                <span class="badge ${row.result === 'success' ? 'bg-success' : 'bg-danger'}">${row.result || 'unknown'}</span>
+                <span class="badge ${badgeClass}">
+                  ${iconClass ? `<i class="${iconClass}"></i>` : ''}${isSuccess ? 'Success' : isFailure ? 'Failed' : resultText}
+                </span>
               </div>
               <dl class="row mb-0 small text-muted">
                 <dt class="col-sm-3">User</dt>
@@ -48,7 +58,8 @@
                 <dd class="col-sm-9">${row.error || '-'}</dd>
               </dl>
             </div>
-          `
+          `;
+          }
         )
         .join('');
     } catch (error) {

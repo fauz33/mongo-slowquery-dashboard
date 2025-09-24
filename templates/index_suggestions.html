@@ -1,0 +1,372 @@
+{% extends "base.html" %}
+
+{% block title %}Index Suggestions - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">Index Suggestions</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-success" id="exportBtn">
+                <i class="fas fa-download me-2"></i>Export Index Commands
+            </button>
+            <a href="{{ url_for('slow_queries') }}" class="btn btn-sm btn-info">
+                <i class="fas fa-clock me-2"></i>Slow Queries
+            </a>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Summary Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card card-stats border-left-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Collections with COLLSCAN</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ suggestions|length }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-warning text-white">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-danger">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">Total COLLSCAN Queries</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ total_collscan_queries }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-danger text-white">
+                            <i class="fas fa-search-minus"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-primary">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Index Suggestions</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ total_suggestions }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-primary text-white">
+                            <i class="fas fa-lightbulb"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card card-stats border-left-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Avg Docs Examined</div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">{{ avg_docs_examined|round|int if avg_docs_examined else 0 }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <div class="stats-icon bg-info text-white">
+                            <i class="fas fa-file-alt"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if top_suggestions and top_suggestions|length > 0 %}
+<!-- Top by Impact -->
+<div class="row mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-fire me-2 text-danger"></i>Top Indexes by Impact</h5>
+        <small class="text-muted">Highest impact suggestions across all collections</small>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Collection</th>
+                <th>Impact</th>
+                <th>Index</th>
+                <th>Reason</th>
+                <th>Confidence</th>
+                <th>Occur.</th>
+                <th>Avg Dur.</th>
+                <th>Ineff.</th>
+                <th>Command</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for sug in top_suggestions %}
+              <tr>
+                <td>{{ loop.index }}</td>
+                <td><code>{{ sug.collection }}</code></td>
+                <td><span class="badge bg-secondary">{{ sug.impact_score }}</span></td>
+                <td><code class="text-primary">{{ sug.index }}</code></td>
+                <td>{{ sug.reason }}</td>
+                <td>
+                  {% if sug.confidence == 'high' %}
+                    <span class="badge bg-success">High</span>
+                  {% elif sug.confidence == 'medium' %}
+                    <span class="badge bg-warning text-dark">Medium</span>
+                  {% else %}
+                    <span class="badge bg-secondary">Low</span>
+                  {% endif %}
+                </td>
+                <td>{{ sug.occurrences or 0 }}</td>
+                <td>{{ sug.avg_duration_ms or 0 }}ms</td>
+                <td>{{ sug.inefficiency_ratio if sug.inefficiency_ratio is not none else '-' }}</td>
+                <td><code class="index-command text-dark bg-light p-2 rounded" style="font-size: 12px;">{{ sug.command }}</code></td>
+                <td>
+                  <button class="btn btn-sm btn-outline-primary copy-command-btn" data-command="{{ sug.command }}" title="Copy command">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if not suggestions %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body text-center py-5">
+                <div class="mb-3">
+                    <i class="fas fa-check-circle fa-3x text-success"></i>
+                </div>
+                <h4 class="text-success">No COLLSCAN Queries Found</h4>
+                <p class="text-muted">
+                    Great! Your queries are using indexes efficiently. No collection scans detected in the analyzed slow queries.
+                </p>
+                <a href="{{ url_for('slow_queries') }}" class="btn btn-primary">
+                    <i class="fas fa-clock me-2"></i>View Slow Queries
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+
+<!-- Disclaimer -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            <strong>Index Suggestions Disclaimer:</strong> These suggestions are based on COLLSCAN queries detected in your logs. 
+            Always test index creation in a staging environment first. Consider your query patterns, data size, and write performance impact before implementing.
+        </div>
+    </div>
+</div>
+
+<!-- Index Suggestions by Collection -->
+{% for collection_name, data in suggestions.items() %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-database me-2"></i>
+                        {{ collection_name }}
+                        <span class="badge bg-warning">{{ data.collscan_queries }} COLLSCAN{{ 's' if data.collscan_queries > 1 else '' }}</span>
+                    </h5>
+                    <div class="text-muted small">
+                        Avg Duration: {{ data.avg_duration|round|int }}ms | 
+                        Avg Docs Examined: {{ data.avg_docs_per_query|round|int if data.avg_docs_per_query else 0 }}
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if data.suggestions %}
+                <h6><i class="fas fa-lightbulb me-2"></i>Recommended Indexes:</h6>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Priority</th>
+                                <th>Index</th>
+                                <th>Reason</th>
+                                <th>Impact</th>
+                                <th>Confidence</th>
+                                <th>Occurrences</th>
+                                <th>Avg Duration</th>
+                                <th>Inefficiency</th>
+                                <th>MongoDB Command</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for suggestion in data.suggestions %}
+                            <tr>
+                                <td>
+                                    {% if suggestion.priority == 'high' %}
+                                        <span class="badge bg-danger">High</span>
+                                    {% elif suggestion.priority == 'medium' %}
+                                        <span class="badge bg-warning">Medium</span>
+                                    {% else %}
+                                        <span class="badge bg-info">Low</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <code class="text-primary">{{ suggestion.index }}</code>
+                                </td>
+                                <td>{{ suggestion.reason }}</td>
+                                <td>
+                                    <span class="badge bg-secondary">{{ suggestion.impact_score or 0 }}</span>
+                                </td>
+                                <td>
+                                    {% if suggestion.confidence == 'high' %}
+                                        <span class="badge bg-success">High</span>
+                                    {% elif suggestion.confidence == 'medium' %}
+                                        <span class="badge bg-warning text-dark">Medium</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">Low</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ suggestion.occurrences or 0 }}</td>
+                                <td>{{ suggestion.avg_duration_ms or 0 }}ms</td>
+                                <td>{{ suggestion.inefficiency_ratio if suggestion.inefficiency_ratio is not none else '-' }}</td>
+                                <td>
+                                    <code class="index-command text-dark bg-light p-2 rounded" style="font-size: 12px;">{{ suggestion.command }}</code>
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary copy-command-btn" 
+                                            data-command="{{ suggestion.command }}" 
+                                            title="Copy command">
+                                        <i class="fas fa-copy"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-secondary">
+                    <i class="fas fa-info-circle me-2"></i>
+                    No clear index suggestions could be generated for the COLLSCAN queries in this collection. 
+                    This may be due to complex query patterns or empty match conditions.
+                </div>
+                {% endif %}
+                
+                <!-- Sample Queries -->
+                {% if data.sample_queries %}
+                <h6 class="mt-4"><i class="fas fa-code me-2"></i>Sample COLLSCAN Queries:</h6>
+                <div class="accordion" id="accordion{{ loop.index }}">
+                    {% for sample in data.sample_queries %}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="heading{{ loop.index0 }}">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                                    data-bs-target="#collapse{{ collection_name|replace('.', '_') }}_{{ loop.index0 }}" 
+                                    aria-expanded="false">
+                                Query {{ loop.index }} - {{ sample.duration }}ms
+                                <small class="text-muted ms-2">({{ sample.timestamp.strftime('%H:%M:%S') if sample.timestamp else 'Unknown time' }})</small>
+                            </button>
+                        </h2>
+                        <div id="collapse{{ collection_name|replace('.', '_') }}_{{ loop.index0 }}" 
+                             class="accordion-collapse collapse" 
+                             data-bs-parent="#accordion{{ loop.index }}">
+                            <div class="accordion-body">
+                                <pre class="bg-light p-3 rounded" style="font-size: 12px; max-height: 200px; overflow-y: auto;">{{ sample.query }}</pre>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Copy command functionality
+    const copyButtons = document.querySelectorAll('.copy-command-btn');
+    copyButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            const command = this.getAttribute('data-command');
+            
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(command).then(function() {
+                    const btn = button;
+                    const originalIcon = btn.innerHTML;
+                    btn.innerHTML = '<i class="fas fa-check text-success"></i>';
+                    btn.classList.remove('btn-outline-primary');
+                    btn.classList.add('btn-success');
+                    
+                    setTimeout(() => {
+                        btn.innerHTML = originalIcon;
+                        btn.classList.remove('btn-success');
+                        btn.classList.add('btn-outline-primary');
+                    }, 2000);
+                }).catch(function(err) {
+                    console.error('Copy failed:', err);
+                    alert('Copy failed. Please select and copy manually.');
+                });
+            } else {
+                // Fallback: create a temporary text area
+                const textArea = document.createElement('textarea');
+                textArea.value = command;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                const btn = button;
+                const originalIcon = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-check text-success"></i>';
+                setTimeout(() => {
+                    btn.innerHTML = originalIcon;
+                }, 2000);
+            }
+        });
+    });
+    
+    // Export functionality
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function() {
+            const exportUrl = '{{ url_for("export_index_suggestions") }}';
+            window.open(exportUrl, '_blank');
+        });
+    }
+});
+</script>
+
+{% endblock %}

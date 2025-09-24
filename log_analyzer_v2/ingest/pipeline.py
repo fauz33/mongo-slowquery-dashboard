@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+import shutil
 from typing import Any, Dict, Optional
 
 from ..config import settings
@@ -51,7 +52,9 @@ def ingest_log_file(
 
     file_map_path = root / "index" / "file_map.json"
     existing_map = load_file_map(file_map_path)
-    source_abs = str(path.resolve())
+
+    resolved_input = path.resolve()
+    source_abs = str(resolved_input)
 
     if file_id is None:
         for existing_id, existing_path in existing_map.items():
@@ -134,7 +137,23 @@ def ingest_log_file(
         conn_info = conn_writer.finalize()
         offset_info = offset_writer.finalize()
 
-        file_map_info = update_file_map(file_map_path, file_id, source_abs)
+        if settings.keep_source_copy:
+            source_dir = root / "source"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            copy_name = f"{file_prefix}{path.suffix or '.log'}"
+            copy_target = source_dir / copy_name
+            if not copy_target.exists():
+                try:
+                    shutil.copy2(path, copy_target)
+                except Exception:
+                    LOGGER.warning("Failed to copy %s to %s", path, copy_target, exc_info=True)
+                else:
+                    LOGGER.info("Copied source log to %s", copy_target)
+            source_record = str(copy_target.resolve()) if copy_target.exists() else source_abs
+        else:
+            source_record = source_abs
+
+        file_map_info = update_file_map(file_map_path, file_id, source_record)
 
         manifest_path = root / "manifest.json"
         manifest_info = append_manifest_entry(

@@ -114,7 +114,8 @@ def _wipe_dataset(root: Path) -> None:
         root / "connections",
         root / "query_offsets",
         root / "manifest.json",
-        root / "file_map.json",
+        root / "index",
+        root / "source",
     ]
     for target in targets:
         try:

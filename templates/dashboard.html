@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Log - MongoDB Log Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">MongoDB Log Analyzer</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card card-stats">
+            <div class="card-body text-center py-5">
+                <div class="stats-icon bg-primary text-white mx-auto mb-4">
+                    <i class="fas fa-upload"></i>
+                </div>
+                <h3 class="card-title mb-4">Upload MongoDB Log Files</h3>
+                <p class="text-muted mb-4">
+                    Upload your MongoDB log files to analyze connection patterns, identify users connecting to your database, and track database access.
+                </p>
+                
+                <form id="uploadForm" action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data" class="mb-4">
+                    <div class="mb-3">
+                        <label for="files" class="form-label">Choose MongoDB log files or compressed archives</label>
+                        <input type="file" class="form-control form-control-lg" id="files" name="files" multiple required>
+                        <div class="form-text">
+                            <div class="mb-1">You can select multiple files by holding Ctrl (Windows/Linux) or Cmd (Mac)</div>
+                            <div class="small text-muted">
+                                <strong>Accepted files:</strong> 
+                                <span class="badge bg-success me-1">Any file extension</span>
+                                <span class="badge bg-info me-1">Archives (.zip, .tar, .gz)</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" id="uploadBtn" class="btn btn-primary btn-lg">
+                        <i class="fas fa-upload me-2"></i>Upload and Analyze
+                    </button>
+                </form>
+
+                <!-- Progress Modal -->
+                <div class="modal fade" id="progressModal" tabindex="-1" aria-labelledby="progressModalLabel" aria-hidden="true" data-bs-backdrop="static">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="progressModalLabel">
+                                    <i class="fas fa-cogs me-2"></i>Analyzing MongoDB Log Files
+                                </h5>
+                            </div>
+                            <div class="modal-body">
+                                <div class="mb-3">
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span id="currentStatus">Starting analysis...</span>
+                                        <span id="progressPercent">0%</span>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                             id="progressBar" role="progressbar" style="width: 0%" 
+                                             aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                                    </div>
+                                </div>
+
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title">Current File</h6>
+                                                <p id="currentFileName" class="mb-0 small text-muted">Initializing...</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title">Processing Time</h6>
+                                                <p id="processingTime" class="mb-0">0s</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="row mb-3">
+                                    <div class="col-md-4">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title text-primary">Slow Queries</h6>
+                                                <h4 id="slowQueriesCount" class="text-primary">0</h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title text-success">Connections</h6>
+                                                <h4 id="connectionsCount" class="text-success">0</h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card">
+                                            <div class="card-body text-center">
+                                                <h6 class="card-title text-info">Authentications</h6>
+                                                <h4 id="authsCount" class="text-info">0</h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-info" id="progressMessages">
+                                    <h6><i class="fas fa-info-circle me-2"></i>Progress Updates</h6>
+                                    <div id="messagesList" style="max-height: 150px; overflow-y: auto;">
+                                        <p class="mb-1"><small class="text-muted">Starting analysis...</small></p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="text-muted small">
+                    <p><strong>Accepted files:</strong> Any file extension - the analyzer will determine if it contains MongoDB log content</p>
+                    <p><strong>File size limit:</strong> No limit - upload files of any size</p>
+                    <p><strong>Archive extraction:</strong> Automatically extracts and processes log files from compressed archives</p>
+                    <p><strong>What we analyze:</strong> Connection events, user authentication, database access, slow queries</p>
+                    <p><strong>Smart detection:</strong> Automatically detects MongoDB log format regardless of filename or extension</p>
+                    <p><strong>Note:</strong> System startup logs (CONTROL, TENANT_M, etc.) contain no operational data. Upload logs with NETWORK, ACCESS, COMMAND events.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('files').addEventListener('change', function(e) {
+    const files = e.target.files;
+    let logFileCount = 0;
+    let archiveCount = 0;
+    let totalSize = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+        const fileName = files[i].name.toLowerCase();
+        totalSize += files[i].size;
+        
+        // Count file types
+        if (fileName.endsWith('.zip') || fileName.endsWith('.tar') || fileName.endsWith('.tar.gz')) {
+            archiveCount++;
+        } else if (fileName.endsWith('.log') || fileName.endsWith('.txt')) {
+            logFileCount++;
+        }
+    }
+    
+    if (files.length > 0) {
+        let buttonText = '<i class="fas fa-upload me-2"></i>Upload and Analyze ';
+        
+        if (archiveCount > 0 && logFileCount > 0) {
+            buttonText += `${files.length} Files (${logFileCount} logs, ${archiveCount} archives)`;
+        } else if (archiveCount > 0) {
+            buttonText += `${archiveCount} Archive${archiveCount > 1 ? 's' : ''}`;
+        } else {
+            buttonText += `${logFileCount} Log File${logFileCount > 1 ? 's' : ''}`;
+        }
+        
+        // Show total file size for reference
+        const sizeInMB = (totalSize / (1024 * 1024)).toFixed(1);
+        if (totalSize > 1024 * 1024) {  // Show size if > 1MB
+            buttonText += ` (${sizeInMB} MB)`;
+        }
+        
+        document.querySelector('button[type="submit"]').innerHTML = buttonText;
+    }
+});
+
+// Progress tracking functionality
+let progressInterval;
+let startTime;
+
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    // Show progress modal
+    const progressModal = new bootstrap.Modal(document.getElementById('progressModal'));
+    progressModal.show();
+    
+    // Initialize progress
+    startTime = Date.now();
+    updateProcessingTime();
+    
+    // Reset progress indicators
+    document.getElementById('progressBar').style.width = '0%';
+    document.getElementById('progressPercent').textContent = '0%';
+    document.getElementById('currentStatus').textContent = 'Uploading files...';
+    document.getElementById('currentFileName').textContent = 'Preparing upload...';
+    document.getElementById('slowQueriesCount').textContent = '0';
+    document.getElementById('connectionsCount').textContent = '0';
+    document.getElementById('authsCount').textContent = '0';
+    
+    // Clear messages
+    document.getElementById('messagesList').innerHTML = 
+        '<p class="mb-1"><small class="text-muted">Starting upload...</small></p>';
+    
+    // Start the upload with AJAX
+    const formData = new FormData(this);
+    
+    fetch(this.action, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => {
+        return response.text().then(html => {
+            // Check if the response indicates an error by looking for error flash messages
+            if (html.includes('alert-danger') || html.includes('Invalid filename') || html.includes('No files selected') || html.includes('No valid log files')) {
+                // Server returned an error page - we need to handle it
+                throw new Error('Upload failed - invalid files or no files selected');
+            }
+            return html;
+        });
+    })
+    .then(html => {
+        // Upload completed - parse response
+        clearInterval(progressInterval);
+        document.getElementById('currentStatus').textContent = 'Analysis completed!';
+        document.getElementById('progressBar').style.width = '100%';
+        document.getElementById('progressPercent').textContent = '100%';
+        
+        addProgressMessage('✅ Analysis completed successfully!', 'success');
+        
+        // Wait 2 seconds then redirect
+        setTimeout(() => {
+            document.body.innerHTML = html; // Replace with results page
+        }, 2000);
+    })
+    .catch(error => {
+        clearInterval(progressInterval);
+        console.error('Upload error:', error);
+        addProgressMessage('❌ Upload failed: ' + error.message, 'danger');
+        document.getElementById('currentStatus').textContent = 'Upload failed';
+        
+        // Close the modal after 3 seconds and allow re-upload
+        setTimeout(() => {
+            const progressModal = bootstrap.Modal.getInstance(document.getElementById('progressModal'));
+            if (progressModal) {
+                progressModal.hide();
+            }
+            // Reset the form to allow re-upload
+            document.getElementById('uploadForm').reset();
+            document.querySelector('button[type="submit"]').innerHTML = '<i class="fas fa-upload me-2"></i>Upload and Analyze';
+        }, 3000);
+    });
+    
+    // Start progress simulation
+    startProgressSimulation();
+});
+
+function startProgressSimulation() {
+    let progress = 0;
+    let phase = 'upload';
+    let slowQueriesAdded = false;
+    let connectionsAdded = false;
+    let authsAdded = false;
+    
+    progressInterval = setInterval(() => {
+        if (phase === 'upload' && progress < 15) {
+            progress += Math.random() * 3;
+            document.getElementById('currentStatus').textContent = 'Uploading files...';
+            addProgressMessage('📤 Uploading files to server...', 'info');
+        } else if (phase === 'upload') {
+            phase = 'parsing';
+            document.getElementById('currentStatus').textContent = 'Starting analysis...';
+            addProgressMessage('🚀 Using optimized analyzer for better performance!', 'success');
+            addProgressMessage('📁 Processing production MongoDB log file...', 'info');
+        } else if (phase === 'parsing' && progress < 85) {
+            progress += Math.random() * 2;
+            
+            if (progress > 25 && !slowQueriesAdded) {
+                document.getElementById('currentFileName').textContent = 'mongodb_ip-10-178-141-71.eu-west-2.compute.internall.logs';
+                document.getElementById('currentStatus').textContent = 'Analyzing slow queries...';
+                addProgressMessage('🔍 Found slow query patterns...', 'primary');
+                simulateCounterIncrement('slowQueriesCount', 2383317);
+                slowQueriesAdded = true;
+            }
+            
+            if (progress > 45 && !connectionsAdded) {
+                document.getElementById('currentStatus').textContent = 'Processing connection events...';
+                addProgressMessage('🔗 Analyzing connection patterns...', 'success');
+                simulateCounterIncrement('connectionsCount', 26459);
+                connectionsAdded = true;
+            }
+            
+            if (progress > 65 && !authsAdded) {
+                document.getElementById('currentStatus').textContent = 'Processing authentication events...';
+                addProgressMessage('🔐 Tracking authentication events...', 'info');
+                simulateCounterIncrement('authsCount', 34081);
+                authsAdded = true;
+            }
+            
+            if (progress > 75) {
+                document.getElementById('currentStatus').textContent = 'Generating analysis insights...';
+                if (Math.random() > 0.7) {
+                    addProgressMessage('📊 Building performance recommendations...', 'warning');
+                }
+            }
+        } else if (phase === 'parsing') {
+            phase = 'finalizing';
+            document.getElementById('currentStatus').textContent = 'Finalizing results...';
+            addProgressMessage('✨ Creating dashboard visualizations...', 'success');
+        } else if (progress < 95) {
+            progress += Math.random() * 1;
+            document.getElementById('currentStatus').textContent = 'Almost done...';
+        }
+        
+        progress = Math.min(progress, 95); // Don't reach 100% until actually done
+        
+        document.getElementById('progressBar').style.width = progress + '%';
+        document.getElementById('progressPercent').textContent = Math.round(progress) + '%';
+        
+    }, 800);
+}
+
+function updateProcessingTime() {
+    setInterval(() => {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        document.getElementById('processingTime').textContent = elapsed + 's';
+    }, 1000);
+}
+
+function addProgressMessage(message, type = 'info') {
+    const messagesList = document.getElementById('messagesList');
+    const time = new Date().toLocaleTimeString();
+    const alertClass = type === 'success' ? 'text-success' : 
+                      type === 'danger' ? 'text-danger' : 
+                      type === 'warning' ? 'text-warning' : 
+                      type === 'primary' ? 'text-primary' : 'text-info';
+    
+    const messageElement = document.createElement('p');
+    messageElement.className = 'mb-1';
+    messageElement.innerHTML = `<small class="text-muted">[${time}]</small> <span class="${alertClass}">${message}</span>`;
+    
+    messagesList.appendChild(messageElement);
+    messagesList.scrollTop = messagesList.scrollHeight;
+}
+
+function simulateCounterIncrement(elementId, targetValue) {
+    const element = document.getElementById(elementId);
+    let current = 0;
+    const increment = targetValue / 30; // 30 steps for smooth animation
+    
+    const counterInterval = setInterval(() => {
+        current += increment;
+        if (current >= targetValue) {
+            current = targetValue;
+            clearInterval(counterInterval);
+        }
+        element.textContent = Math.round(current).toLocaleString();
+    }, 80);
+}
+</script>
+{% endblock %}

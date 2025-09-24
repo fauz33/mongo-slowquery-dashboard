@@ -1531,12 +1531,15 @@ class DuckDBService:
         top_docs_examined = run(
             f"""
             SELECT
-                namespace,
+                COALESCE(NULLIF(database, ''), 'unknown') AS database,
+                COALESCE(NULLIF(collection, ''), 'unknown') AS collection,
+                COALESCE(NULLIF(plan_summary, ''), 'None') AS plan_summary,
                 SUM(docs_examined) AS total_docs_examined,
-                COUNT(*) AS executions
+                COUNT(*) AS executions,
+                AVG(duration_ms) AS avg_duration_ms
             FROM slow_queries
             {where_clause}
-            GROUP BY namespace
+            GROUP BY database, collection, plan_summary
             ORDER BY total_docs_examined DESC
             LIMIT ?
             """
@@ -1545,12 +1548,15 @@ class DuckDBService:
         top_docs_returned = run(
             f"""
             SELECT
-                namespace,
+                COALESCE(NULLIF(database, ''), 'unknown') AS database,
+                COALESCE(NULLIF(collection, ''), 'unknown') AS collection,
+                COALESCE(NULLIF(plan_summary, ''), 'None') AS plan_summary,
                 SUM(docs_returned) AS total_docs_returned,
-                COUNT(*) AS executions
+                COUNT(*) AS executions,
+                AVG(duration_ms) AS avg_duration_ms
             FROM slow_queries
             {where_clause}
-            GROUP BY namespace
+            GROUP BY database, collection, plan_summary
             ORDER BY total_docs_returned DESC
             LIMIT ?
             """
@@ -1559,13 +1565,15 @@ class DuckDBService:
         top_duration = run(
             f"""
             SELECT
-                namespace,
+                COALESCE(NULLIF(database, ''), 'unknown') AS database,
+                COALESCE(NULLIF(collection, ''), 'unknown') AS collection,
+                COALESCE(NULLIF(plan_summary, ''), 'None') AS plan_summary,
                 SUM(duration_ms) AS total_duration_ms,
                 AVG(duration_ms) AS avg_duration_ms,
                 COUNT(*) AS executions
             FROM slow_queries
             {where_clause}
-            GROUP BY namespace
+            GROUP BY database, collection, plan_summary
             ORDER BY total_duration_ms DESC
             LIMIT ?
             """
@@ -1574,13 +1582,16 @@ class DuckDBService:
         top_io_time = run(
             f"""
             SELECT
-                namespace,
+                COALESCE(NULLIF(database, ''), 'unknown') AS database,
+                COALESCE(NULLIF(collection, ''), 'unknown') AS collection,
+                COALESCE(NULLIF(plan_summary, ''), 'None') AS plan_summary,
                 SUM(keys_examined) AS total_keys_examined,
                 SUM(docs_examined) AS total_docs_examined,
-                COUNT(*) AS executions
+                COUNT(*) AS executions,
+                AVG(duration_ms) AS avg_duration_ms
             FROM slow_queries
             {where_clause}
-            GROUP BY namespace
+            GROUP BY database, collection, plan_summary
             ORDER BY total_keys_examined DESC
             LIMIT ?
             """
