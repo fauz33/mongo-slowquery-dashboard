@@ -93,6 +93,7 @@ coverage.xml
 .pytest_cache/
 bandit-report.json
 testing-workflow/
+testing_workflow_v2/
 
 # Documentation (generated)
 *_SUMMARY.md
@@ -102,6 +103,11 @@ testing-workflow/
 fix_*.md
 VALIDATION_SETTINGS.md
 archived_tests/
+
+# Project planning and outputs
+PLAN_REFACTOR.md
+out/
+temp_test/
 
 # Development artifacts
 .ruff_cache/

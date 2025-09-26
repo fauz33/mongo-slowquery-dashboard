@@ -746,6 +746,8 @@ def create_app() -> Flask:
 
         exclude_system = selected_db.lower() == "all"
 
+        bucket_minutes = request.args.get("bucket_minutes", default=0, type=int) or 0
+
         filters: dict[str, object] = {
             "exclude_system": exclude_system,
         }
@@ -757,8 +759,9 @@ def create_app() -> Flask:
         dataset = service.get_query_trend_dataset(
             grouping=grouping_type,
             filters=filters,
-            summary_limit=100,
+            summary_limit=200,
             execution_limit=2000,
+            bucket_minutes=bucket_minutes,
         )
 
         patterns = dataset.get("patterns", []) if isinstance(dataset, dict) else []
@@ -842,10 +845,13 @@ def create_app() -> Flask:
                 continue
             duration_ms = int(float(entry.get("duration_ms") or 0.0))
             timestamp_value = entry.get("timestamp")
-            bucket["executions"].append(
+            bucket_execs = bucket.setdefault("executions", [])
+            bucket_execs.append(
                 {
                     "timestamp": timestamp_value,
+                    "bucket_end": entry.get("bucket_end"),
                     "duration": duration_ms,
+                    "bucket_count": int(entry.get("bucket_execution_count") or 0),
                 }
             )
 
@@ -864,6 +870,8 @@ def create_app() -> Flask:
             key = str(group_key)
             bucket = pattern_map.get(key)
             avg_duration = bucket.get("avg_duration") if bucket else 0.0
+            bucket_count = int(entry.get("bucket_execution_count") or 0)
+            end_ts = entry.get("bucket_end")
             trend_data.append(
                 {
                     "timestamp": entry.get("timestamp"),
@@ -872,6 +880,8 @@ def create_app() -> Flask:
                     "namespace": entry.get("namespace") or "unknown.unknown",
                     "query_hash": key,
                     "avg_duration": float(avg_duration or 0.0),
+                    "bucket_count": bucket_count,
+                    "bucket_end": end_ts,
                 }
             )
 
@@ -915,6 +925,7 @@ def create_app() -> Flask:
             "query_details": query_details,
             "top_queries": top_queries,
             "stats": stats if pattern_map else None,
+            "bucket_minutes": bucket_minutes,
         }
 
         return render_template("query_trend.html", **context)
@@ -933,6 +944,16 @@ def create_app() -> Flask:
 
         selected_db = (request.args.get("database") or "all").strip() or "all"
         selected_plan = (request.args.get("plan_summary") or "all").strip() or "all"
+
+        exclude_checkbox_value = request.args.get("exclude_system_db")
+        exclude_flag_present = "exclude_system_db_flag" in request.args
+        if exclude_flag_present or exclude_checkbox_value is not None:
+            exclude_system_db = (
+                exclude_checkbox_value is not None
+                and exclude_checkbox_value.lower() not in {"0", "false", "off"}
+            )
+        else:
+            exclude_system_db = True
 
         threshold_param = (request.args.get("threshold") or "100").strip()
         try:
@@ -970,7 +991,16 @@ def create_app() -> Flask:
         end_date_display = request.args.get("end_date") or time_filters.get("end_local") or ""
 
         # Fetch dropdown data
-        databases = ["all"] + service.list_slow_query_databases(exclude_system=True)
+        available_databases = service.list_slow_query_databases(
+            exclude_system=exclude_system_db
+        )
+        if (
+            selected_db
+            and selected_db.lower() != "all"
+            and selected_db not in available_databases
+        ):
+            available_databases = sorted({*available_databases, selected_db})
+        databases = available_databases
 
         # Base filter kwargs for service calls
         db_filter = None if selected_db.lower() == "all" else selected_db
@@ -991,7 +1021,7 @@ def create_app() -> Flask:
                 plan_summary=plan_filter,
                 start_ts=start_epoch,
                 end_ts=end_epoch,
-                exclude_system=(db_filter is None),
+                exclude_system=exclude_system_db,
                 page=page if not per_page_all else 1,
                 per_page=fetch_limit,
                 order_by="total_duration_ms",
@@ -1004,25 +1034,71 @@ def create_app() -> Flask:
             queries = []
             for item in items:
                 entry = dict(item)
-                avg_duration = float(entry.get("avg_duration_ms") or 0.0)
-                min_duration = float(entry.get("min_duration_ms") or 0.0)
-                max_duration = float(entry.get("max_duration_ms") or 0.0)
-                last_seen_raw = entry.get("last_seen_raw")
-                last_seen_dt = _parse_iso_datetime(last_seen_raw) if isinstance(last_seen_raw, str) else None
+
+                def _to_float(value: object) -> float | None:
+                    if value is None:
+                        return None
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return None
+
+                avg_duration = _to_float(
+                    entry.get("avg_duration") or entry.get("avg_duration_ms")
+                )
+                min_duration = _to_float(
+                    entry.get("min_duration") or entry.get("min_duration_ms")
+                )
+                max_duration = _to_float(
+                    entry.get("max_duration") or entry.get("max_duration_ms")
+                )
+
+                last_seen_value = entry.get("last_seen_raw") or entry.get("last_seen")
+                if isinstance(last_seen_value, str):
+                    last_seen_dt = _parse_iso_datetime(last_seen_value)
+                else:
+                    last_seen_dt = last_seen_value
+
+                execution_total = (
+                    entry.get("execution_count")
+                    or entry.get("total_count")
+                    or entry.get("total_executions")
+                )
+                try:
+                    execution_count = int(execution_total) if execution_total is not None else 0
+                except (TypeError, ValueError):
+                    execution_count = 0
+
+                docs_examined_total = (
+                    entry.get("docs_examined")
+                    or entry.get("total_docs_examined")
+                    or entry.get("avg_docs_examined")
+                )
+                try:
+                    docs_examined = int(docs_examined_total) if docs_examined_total is not None else 0
+                except (TypeError, ValueError):
+                    docs_examined = 0
+
+                duration_display = max_duration or avg_duration or 0
+                try:
+                    duration_int = int(round(duration_display))
+                except TypeError:
+                    duration_int = 0
 
                 entry.update(
                     {
-                        "avg_duration": int(round(avg_duration)),
-                        "min_duration": int(round(min_duration)) if min_duration else None,
-                        "max_duration": int(round(max_duration)) if max_duration else None,
+                        "avg_duration": int(round(avg_duration)) if avg_duration is not None else 0,
+                        "min_duration": int(round(min_duration)) if min_duration is not None else None,
+                        "max_duration": int(round(max_duration)) if max_duration is not None else None,
                         "last_seen": last_seen_dt,
-                        "execution_count": int(entry.get("execution_count") or 0),
-                        "duration": int(round(max_duration)) if max_duration else int(round(avg_duration)),
+                        "execution_count": execution_count,
+                        "duration": duration_int,
                         "sample_query": entry.get("sample_query") or entry.get("slowest_query_full"),
-                        "query_text": entry.get("slowest_query_full"),
-                        "docs_examined": int(entry.get("total_docs_examined") or 0),
+                        "query_text": entry.get("slowest_query_full") or entry.get("sample_query"),
+                        "docs_examined": docs_examined,
                     }
                 )
+
                 queries.append(entry)
 
         else:
@@ -1035,6 +1111,7 @@ def create_app() -> Flask:
                 end_ts=end_epoch,
                 page=page if not per_page_all else 1,
                 per_page=fetch_limit,
+                exclude_system=exclude_system_db,
             )
 
             items = result.get("items", [])
@@ -1105,6 +1182,7 @@ def create_app() -> Flask:
             "end_iso": end_iso_value,
             "per_page": per_page_param,
             "page": page,
+            "exclude_system_db": exclude_system_db,
         }
 
         return render_template("slow_queries.html", **context)
@@ -1133,6 +1211,16 @@ def create_app() -> Flask:
         grouping_type = (request.args.get("grouping") or "pattern_key").strip()
         if grouping_type not in {"pattern_key", "namespace", "query_hash"}:
             grouping_type = "pattern_key"
+
+        export_exclude_value = request.args.get("exclude_system_db")
+        export_exclude_flag = "exclude_system_db_flag" in request.args
+        if export_exclude_flag or export_exclude_value is not None:
+            exclude_system_db = (
+                export_exclude_value is not None
+                and export_exclude_value.lower() not in {"0", "false", "off"}
+            )
+        else:
+            exclude_system_db = True
 
         threshold_param = request.args.get("threshold", "100")
         try:
@@ -1170,6 +1258,7 @@ def create_app() -> Flask:
                 end_ts=end_ts,
                 limit=export_limit,
                 offset=0,
+                exclude_system=exclude_system_db,
             )
             total = result["total"]
             items = result.get("items", [])
@@ -1192,6 +1281,7 @@ def create_app() -> Flask:
                     "start_iso": start_iso_value,
                     "end_iso": end_iso_value,
                     "limit": export_limit,
+                    "exclude_system_db": exclude_system_db,
                 },
                 "items": payload_items,
             }
@@ -1205,6 +1295,7 @@ def create_app() -> Flask:
                 end_ts=end_ts,
                 page=1,
                 per_page=export_limit,
+                exclude_system=exclude_system_db,
             )
             total = result["total"]
             items = result.get("items", [])
@@ -1228,6 +1319,7 @@ def create_app() -> Flask:
                     "start_iso": start_iso_value,
                     "end_iso": end_iso_value,
                     "limit": export_limit,
+                    "exclude_system_db": exclude_system_db,
                 },
                 "items": payload_items,
             }

@@ -278,6 +278,7 @@ class DuckDBService:
         end_ts: Optional[int] = None,
         page: int = 1,
         per_page: int = 100,
+        exclude_system: bool = False,
     ) -> Dict[str, Any]:
         """Return paginated execution records honoring the given filters."""
 
@@ -295,7 +296,7 @@ class DuckDBService:
             plan_summary=plan_summary,
             start_ts=start_ts,
             end_ts=end_ts,
-            exclude_system=not database or database.lower() == "all",
+            exclude_system=exclude_system,
         )
 
         total_row = self._conn.execute(
@@ -365,6 +366,7 @@ class DuckDBService:
         end_ts: Optional[int] = None,
         limit: int = 100,
         offset: int = 0,
+        exclude_system: bool = False,
     ) -> Dict[str, Any]:
         """Return aggregated pattern statistics for the requested grouping."""
 
@@ -381,7 +383,7 @@ class DuckDBService:
             plan_summary=plan_summary,
             start_ts=start_ts,
             end_ts=end_ts,
-            exclude_system=not database or database.lower() == "all",
+            exclude_system=exclude_system,
         )
 
         normalized_cte = f"""
@@ -685,6 +687,7 @@ class DuckDBService:
         filters: Dict[str, Any] | None = None,
         summary_limit: int = 500,
         execution_limit: int = 2000,
+        bucket_minutes: int = 0,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Return aggregated pattern stats plus execution samples for trend views."""
 
@@ -794,10 +797,73 @@ class DuckDBService:
             LIMIT ?
         """
 
-        pattern_cursor = self._conn.execute(pattern_sql, [*params, summary_limit])
-        pattern_columns = [desc[0] for desc in pattern_cursor.description]
-        pattern_rows = pattern_cursor.fetchall()
-        patterns = [dict(zip(pattern_columns, row)) for row in pattern_rows]
+        duration_cursor = self._conn.execute(pattern_sql, [*params, summary_limit])
+        pattern_columns = [desc[0] for desc in duration_cursor.description]
+        duration_rows = duration_cursor.fetchall()
+
+        count_sql = f"""
+            {coalesced_cte}
+            SELECT
+                {group_expr} AS {alias},
+                {namespace_expr},
+                {database_expr},
+                {collection_expr},
+                {operation_expr},
+                {plan_expr},
+                {hash_expr},
+                COUNT(*) AS execution_count,
+                AVG(duration_ms) AS avg_duration_ms,
+                MIN(duration_ms) AS min_duration_ms,
+                MAX(duration_ms) AS max_duration_ms,
+                SUM(duration_ms) AS total_duration_ms,
+                SUM(docs_examined) AS docs_examined,
+                SUM(docs_returned) AS docs_returned,
+                ARG_MAX(query_text, duration_ms) AS sample_query
+            FROM base
+            GROUP BY {alias}
+            ORDER BY execution_count DESC, total_duration_ms DESC
+            LIMIT ?
+        """
+
+        count_cursor = self._conn.execute(count_sql, [*params, summary_limit])
+        count_rows = count_cursor.fetchall()
+
+        pattern_map: Dict[str, Dict[str, Any]] = {}
+        for row in duration_rows:
+            record = dict(zip(pattern_columns, row))
+            key_val = record.get(alias)
+            if key_val is not None:
+                pattern_map[str(key_val)] = record
+
+        for row in count_rows:
+            record = dict(zip(pattern_columns, row))
+            key_val = record.get(alias)
+            if key_val is None:
+                continue
+            key = str(key_val)
+            if key not in pattern_map:
+                pattern_map[key] = record
+
+        patterns = list(pattern_map.values())
+        if order_by is None:
+            patterns.sort(key=lambda r: (float(r.get("total_duration_ms") or 0), int(r.get("execution_count") or 0)), reverse=True)
+        else:
+            def _order_value(record: Dict[str, Any]) -> tuple[float, float, float]:
+                primary = record.get(order_by)
+                try:
+                    primary_value = float(primary) if primary is not None else 0.0
+                except (TypeError, ValueError):
+                    primary_value = 0.0
+                if order_dir == "ASC":
+                    primary_value = -primary_value
+                total_val = float(record.get("total_duration_ms") or 0.0)
+                count_val = float(record.get("execution_count") or 0.0)
+                return (primary_value, total_val, count_val)
+
+            patterns.sort(key=_order_value, reverse=True)
+
+        if len(patterns) > summary_limit:
+            patterns = patterns[:summary_limit]
 
         if not patterns:
             return {"patterns": [], "executions": []}
@@ -810,33 +876,90 @@ class DuckDBService:
         exec_where = f"WHERE {alias} IN ({key_placeholders})"
         exec_params = [*params, *group_keys]
 
-        execution_sql = f"""
-            {coalesced_cte}
-            SELECT
-                {group_expr} AS {alias},
-                timestamp,
-                ts_epoch,
-                duration_ms,
-                COALESCE(NULLIF(operation, ''), 'unknown') AS operation,
-                COALESCE(NULLIF(namespace, ''), 'unknown') AS namespace,
-                COALESCE(NULLIF(database, ''), 'unknown') AS database,
-                COALESCE(NULLIF(collection, ''), 'unknown') AS collection,
-                COALESCE(NULLIF(plan_summary, ''), 'None') AS plan_summary,
-                COALESCE(NULLIF(query_hash, ''), 'unknown') AS query_hash,
-                docs_examined,
-                docs_returned,
-                query_text
-            FROM base
-            {exec_where}
-            ORDER BY ts_epoch ASC
-            LIMIT ?
-        """
+        if bucket_minutes and bucket_minutes > 0:
+            bucket_seconds = max(int(bucket_minutes), 1) * 60
+            execution_sql = f"""
+                {coalesced_cte}
+                SELECT
+                    {group_expr} AS {alias},
+                    MIN(ts_epoch) AS bucket_start_epoch,
+                    MAX(ts_epoch) AS bucket_end_epoch,
+                    AVG(duration_ms) AS avg_duration_ms,
+                    MAX(duration_ms) AS max_duration_ms,
+                    SUM(duration_ms) AS total_duration_ms,
+                    COUNT(*) AS bucket_execution_count,
+                    ANY_VALUE(COALESCE(NULLIF(operation, ''), 'unknown')) AS operation,
+                    ANY_VALUE(COALESCE(NULLIF(namespace, ''), 'unknown')) AS namespace,
+                    ANY_VALUE(COALESCE(NULLIF(database, ''), 'unknown')) AS database,
+                    ANY_VALUE(COALESCE(NULLIF(collection, ''), 'unknown')) AS collection,
+                    ANY_VALUE(COALESCE(NULLIF(plan_summary, ''), 'None')) AS plan_summary,
+                    ANY_VALUE(COALESCE(NULLIF(query_hash, ''), 'unknown')) AS query_hash
+                FROM base
+                {exec_where}
+                GROUP BY {alias}, FLOOR(ts_epoch / {bucket_seconds})
+                ORDER BY bucket_start_epoch ASC
+            """
 
-        execution_cursor = self._conn.execute(
-            execution_sql, [*exec_params, execution_limit]
-        )
-        execution_columns = [desc[0] for desc in execution_cursor.description]
-        executions = [dict(zip(execution_columns, row)) for row in execution_cursor.fetchall()]
+            execution_cursor = self._conn.execute(execution_sql, exec_params)
+            execution_columns = [desc[0] for desc in execution_cursor.description]
+            executions_raw = [dict(zip(execution_columns, row)) for row in execution_cursor.fetchall()]
+
+            executions: List[Dict[str, Any]] = []
+            for record in executions_raw:
+                start_epoch = record.get("bucket_start_epoch")
+                end_epoch = record.get("bucket_end_epoch")
+                timestamp_iso: str | None = None
+                end_iso: str | None = None
+                if isinstance(start_epoch, (int, float)):
+                    timestamp_iso = datetime.fromtimestamp(float(start_epoch), tz=timezone.utc).isoformat()
+                if isinstance(end_epoch, (int, float)):
+                    end_iso = datetime.fromtimestamp(float(end_epoch), tz=timezone.utc).isoformat()
+
+                avg_duration = record.get("avg_duration_ms")
+                max_duration = record.get("max_duration_ms")
+                total_duration = record.get("total_duration_ms")
+                bucket_count = record.get("bucket_execution_count")
+
+                record.update(
+                    {
+                        "timestamp": timestamp_iso,
+                        "bucket_end": end_iso,
+                        "duration_ms": avg_duration,
+                        "avg_duration_ms": avg_duration,
+                        "max_duration_ms": max_duration,
+                        "total_duration_ms": total_duration,
+                        "bucket_execution_count": bucket_count,
+                    }
+                )
+                executions.append(record)
+        else:
+            execution_sql = f"""
+                {coalesced_cte}
+                SELECT
+                    {group_expr} AS {alias},
+                    timestamp,
+                    ts_epoch,
+                    duration_ms,
+                    COALESCE(NULLIF(operation, ''), 'unknown') AS operation,
+                    COALESCE(NULLIF(namespace, ''), 'unknown') AS namespace,
+                    COALESCE(NULLIF(database, ''), 'unknown') AS database,
+                    COALESCE(NULLIF(collection, ''), 'unknown') AS collection,
+                    COALESCE(NULLIF(plan_summary, ''), 'None') AS plan_summary,
+                    COALESCE(NULLIF(query_hash, ''), 'unknown') AS query_hash,
+                    docs_examined,
+                    docs_returned,
+                    query_text
+                FROM base
+                {exec_where}
+                ORDER BY ts_epoch ASC
+                LIMIT ?
+            """
+
+            execution_cursor = self._conn.execute(
+                execution_sql, [*exec_params, execution_limit]
+            )
+            execution_columns = [desc[0] for desc in execution_cursor.description]
+            executions = [dict(zip(execution_columns, row)) for row in execution_cursor.fetchall()]
 
         return {"patterns": patterns, "executions": executions}
 

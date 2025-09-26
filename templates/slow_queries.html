@@ -174,6 +174,13 @@
                         </select>
                     </div>
                     <div class="col-md-12 mt-2">
+                        <input type="hidden" name="exclude_system_db_flag" value="1">
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="exclude_system_db" name="exclude_system_db" value="1" {% if exclude_system_db %}checked{% endif %}>
+                            <label class="form-check-label" for="exclude_system_db">
+                                Exclude MongoDB system databases
+                            </label>
+                        </div>
                         {% if min_date and max_date %}
                         <div class="mb-2">
                             <small class="text-muted me-2">Quick Select:</small>
@@ -314,25 +321,30 @@
                     {% endif %}
                     
                     <div class="table-responsive" style="overflow-x: auto;">
-                        <table class="table table-bordered table-hover table-nowrap">
+                        <table class="table table-bordered table-hover table-nowrap" id="slow-queries-table">
                             <thead class="table-primary">
                                 <tr>
                                     {% if view_mode == 'unique_queries' %}
                                         <th style="min-width: 120px; color: #000; font-weight: bold;">Namespace</th>
                                         <th style="min-width: 120px; color: #000; font-weight: bold;">Hash</th>
                                         <th style="min-width: 120px; color: #000; font-weight: bold;">Plan Summary</th>
-                                        <th style="min-width: 100px; color: #000; font-weight: bold;">Executions</th>
-                                        <th style="min-width: 120px; color: #000; font-weight: bold;">Avg Duration</th>
+                                        <th class="sortable" data-sort-key="executions" style="min-width: 100px; color: #000; font-weight: bold; cursor: pointer;">
+                                            Executions
+                                            <span class="sort-indicator" data-column="executions"></span>
+                                        </th>
+                                        <th class="sortable" data-sort-key="avg-duration" style="min-width: 120px; color: #000; font-weight: bold; cursor: pointer;">
+                                            Avg Duration
+                                            <span class="sort-indicator" data-column="avg-duration"></span>
+                                        </th>
                                         <th style="min-width: 140px; color: #000; font-weight: bold;">Min-Max Duration</th>
                                         <th style="min-width: 140px; color: #000; font-weight: bold;">Last Seen</th>
                                         <th style="min-width: 300px; color: #000; font-weight: bold;">Query Text</th>
                                     {% else %}
-                                        <th style="min-width: 120px; color: #000; font-weight: bold; text-align: center;">Namespace</th>
                                         <th style="min-width: 100px; color: #000; font-weight: bold; text-align: center;">Connection ID</th>
+                                        <th style="min-width: 120px; color: #000; font-weight: bold; text-align: center;">Namespace</th>
                                         <th style="min-width: 180px; color: #000; font-weight: bold; text-align: center;">Hash</th>
                                         <th style="min-width: 120px; color: #000; font-weight: bold; text-align: center;">Plan Summary</th>
                                         <th style="min-width: 100px; color: #000; font-weight: bold; text-align: center;">Duration</th>
-                                        <th style="min-width: 100px; color: #000; font-weight: bold; text-align: center;">Docs Examined</th>
                                         <th style="min-width: 140px; color: #000; font-weight: bold; text-align: center;">Timestamp</th>
                                         <th style="min-width: 400px; color: #000; font-weight: bold; text-align: center;">Query Text</th>
                                     {% endif %}
@@ -373,12 +385,12 @@
                                         </td>
                                         
                                         <!-- Executions -->
-                                        <td class="text-center">
+                                        <td class="text-center" data-sort="executions" data-value="{{ query.execution_count if query.execution_count else query['execution_count'] }}">
                                             <span class="badge bg-primary">{{ query.execution_count if query.execution_count else query['execution_count'] }}×</span>
                                         </td>
                                         
                                         <!-- Avg Duration (moved after Executions) -->
-                                        <td class="text-center">
+                                        <td class="text-center" data-sort="avg-duration" data-value="{{ query.avg_duration if query.avg_duration else query['avg_duration'] }}">
                                             {% set avg_duration_ms = query.avg_duration|round|int %}
                                             {% if avg_duration_ms >= 3600000 %}
                                                 {% set hours = (avg_duration_ms / 3600000)|round(1) %}
@@ -403,13 +415,13 @@
                                         
                                         <!-- Min-Max Duration (was Duration Range) -->
                                         <td class="text-center">
-                                            {% set min_dur = query.min_duration if query.min_duration else query['min_duration'] %}
-                                            {% set max_dur = query.max_duration if query.max_duration else query['max_duration'] %}
-                                            {% if min_dur and max_dur %}
-                                                <small class="text-muted">{{ min_dur }}-{{ max_dur }}ms</small>
-                                            {% else %}
-                                                <small class="text-muted">N/A</small>
-                                            {% endif %}
+                                        {% set min_dur = query.min_duration if query.min_duration is not none else query['min_duration'] %}
+                                        {% set max_dur = query.max_duration if query.max_duration is not none else query['max_duration'] %}
+                                        {% if min_dur is not none and max_dur is not none %}
+                                            <small class="text-muted">{{ min_dur }}-{{ max_dur }}ms</small>
+                                        {% else %}
+                                            <small class="text-muted">N/A</small>
+                                        {% endif %}
                                         </td>
                                         
                                         <!-- Last Seen -->
@@ -435,13 +447,21 @@
                                             </button>
                                         </td>
                                     {% else %}
-                                        <!-- Namespace -->
-                                        <td>{{ query.namespace or (query.database + '.' + query.collection) if query.database and query.collection else 'unknown' }}</td>
-                                        
                                         <!-- Connection ID -->
                                         <td class="text-center">
                                             {% if query.connection_id %}
                                                 <code class="text-primary">{{ query.connection_id }}</code>
+                                            {% else %}
+                                                <span class="badge bg-light text-muted">unknown</span>
+                                            {% endif %}
+                                        </td>
+                                        
+                                        <!-- Namespace -->
+                                        <td class="text-center">
+                                            {% if query.namespace %}
+                                                <code>{{ query.namespace }}</code>
+                                            {% elif query.database and query.collection %}
+                                                <code>{{ query.database }}.{{ query.collection }}</code>
                                             {% else %}
                                                 <span class="badge bg-light text-muted">unknown</span>
                                             {% endif %}
@@ -496,11 +516,6 @@
                                             {% else %}
                                                 <span class="badge bg-info fs-6">{{ duration_ms }}ms</span>
                                             {% endif %}
-                                        </td>
-                                        
-                                        <!-- Docs Examined -->
-                                        <td class="text-center">
-                                            <small class="text-muted">{{ query.docs_examined if query.docs_examined else 'N/A' }}</small>
                                         </td>
                                         
                                         <!-- Timestamp -->
@@ -706,7 +721,66 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 1000);
         });
     }
+
+    initUniqueQueriesSorting();
 });
+
+function initUniqueQueriesSorting() {
+    const table = document.getElementById('slow-queries-table');
+    if (!table) return;
+
+    const uniqueModeRadio = document.querySelector('input[name="viewMode"][value="unique_queries"]');
+    if (!uniqueModeRadio || !uniqueModeRadio.checked) return;
+
+    const headers = table.querySelectorAll('th.sortable');
+    headers.forEach((header) => {
+        header.addEventListener('click', () => {
+            const sortKey = header.dataset.sortKey;
+            if (!sortKey) return;
+
+            const currentOrder = header.dataset.sortOrder;
+            const newOrder = currentOrder === 'desc' ? 'asc' : 'desc';
+
+            headers.forEach((h) => {
+                h.removeAttribute('data-sort-order');
+                const indicator = h.querySelector('.sort-indicator');
+                if (indicator) indicator.textContent = '';
+            });
+
+            header.dataset.sortOrder = newOrder;
+            const indicator = header.querySelector('.sort-indicator');
+            if (indicator) indicator.textContent = newOrder === 'desc' ? '▼' : '▲';
+
+            sortUniqueRows(table, sortKey, newOrder);
+        });
+    });
+}
+
+function sortUniqueRows(table, sortKey, order) {
+    const tbody = table.querySelector('tbody');
+    if (!tbody) return;
+
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const descending = order === 'desc';
+
+    rows.sort((a, b) => {
+        const valueA = extractSortValue(a, sortKey);
+        const valueB = extractSortValue(b, sortKey);
+
+        if (valueA === valueB) return 0;
+        return descending ? valueB - valueA : valueA - valueB;
+    });
+
+    rows.forEach((row) => tbody.appendChild(row));
+}
+
+function extractSortValue(row, sortKey) {
+    const cell = row.querySelector(`td[data-sort="${sortKey}"]`);
+    if (!cell) return 0;
+    const raw = cell.getAttribute('data-value');
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
 
 // Copy query function implemented above
 

@@ -52,7 +52,7 @@
     <div class="col-12">
         <div class="card">
             <div class="card-body">
-                <form method="GET" action="{{ url_for('query_trend') }}" class="row g-3">
+                <form method="GET" action="{{ url_for('query_trend') }}" class="row g-3" id="query-trend-form">
                     <!-- Preserve grouping type -->
                     <input type="hidden" name="groupingType" value="{{ grouping_type }}">
                     
@@ -75,7 +75,6 @@
                             {% endfor %}
                         </select>
                     </div>
-                    
                     <div class="col-md-4 d-flex align-items-end">
                         <button type="submit" class="btn btn-primary me-2">
                             <i class="fas fa-filter me-1"></i>Apply Filters
@@ -165,11 +164,30 @@
 <div class="row mb-4">
     <div class="col-12">
         <div class="card card-stats">
-            <div class="card-header bg-light">
-                <h5 class="mb-0">
-                    <i class="fas fa-chart-scatter"></i> Query Execution Time Trend
-                </h5>
-                <small class="text-muted">Click on data points to view query details</small>
+            <div class="card-header bg-light d-flex flex-column flex-md-row justify-content-between align-items-md-center">
+                <div>
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-scatter"></i> Query Execution Time Trend
+                    </h5>
+                    <small class="text-muted">Click on data points to view query details</small>
+                </div>
+                <div class="mt-3 mt-md-0">
+                    <div class="btn-group" role="group" aria-label="Interval selection">
+                        {% set bucket_options = [
+                            {'label': 'Raw', 'value': 0},
+                            {'label': '1m', 'value': 1},
+                            {'label': '5m', 'value': 5},
+                            {'label': '15m', 'value': 15},
+                            {'label': '60m', 'value': 60}
+                        ] %}
+                        {% for option in bucket_options %}
+                        <input type="radio" class="btn-check" name="bucket_minutes" id="bucket_top_{{ option.value }}" value="{{ option.value }}" form="query-trend-form" {% if bucket_minutes == option.value %}checked{% endif %}>
+                        <label class="btn btn-outline-secondary" for="bucket_top_{{ option.value }}">
+                            {{ option.label }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div id="trendChart" style="height: 500px;"></div>
@@ -189,16 +207,30 @@
                 <small class="text-muted">Showing top {{ top_queries|length }} queries sorted by cumulative execution time</small>
             </div>
             <div class="card-body p-0">
+                <div class="alert alert-info alert-dismissible fade show m-3" role="alert" style="font-size: 0.85rem;">
+                    <i class="fas fa-info-circle me-2"></i>
+                    Showing the top 200 query patterns. {% if bucket_minutes %}Timeline points are aggregated into {{ bucket_minutes }} minute intervals so every matching log entry is represented.{% else %}Timeline points are sampled up to 2,000 executions to keep the chart responsive.{% endif %}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
                 <div class="table-responsive">
-                    <table class="table table-striped table-hover mb-0">
+                    <table class="table table-striped table-hover mb-0" id="top-queries-table">
                         <thead class="table-dark">
                             <tr>
                                 <th>Namespace</th>
                                 <th>Operation</th>
-                                <th class="text-end">Execution Count</th>
-                                <th class="text-end">Mean Duration</th>
+                                <th class="text-end sortable" data-sort-key="execution-count" style="cursor: pointer;">
+                                    Execution Count
+                                    <span class="sort-indicator" data-column="execution-count"></span>
+                                </th>
+                                <th class="text-end sortable" data-sort-key="mean-duration" style="cursor: pointer;">
+                                    Mean Duration
+                                    <span class="sort-indicator" data-column="mean-duration"></span>
+                                </th>
                                 <th class="text-end">Max Duration</th>
-                                <th class="text-end">Total Time</th>
+                                <th class="text-end sortable" data-sort-key="total-time" style="cursor: pointer;">
+                                    Total Time
+                                    <span class="sort-indicator" data-column="total-time"></span>
+                                </th>
                                 <th class="text-center">Actions</th>
                             </tr>
                         </thead>
@@ -219,10 +251,10 @@
                                         {{ query.operation.upper() }}
                                     </span>
                                 </td>
-                                <td class="text-end">
+                                <td class="text-end" data-sort="execution-count" data-value="{{ query.execution_count }}">
                                     <strong>{{ "{:,}".format(query.execution_count) }}</strong>
                                 </td>
-                                <td class="text-end">
+                                <td class="text-end" data-sort="mean-duration" data-value="{{ query.mean_duration }}">
                                     <div class="{% if query.mean_duration > 5000 %}text-danger fw-bold{% elif query.mean_duration > 1000 %}text-warning fw-bold{% else %}text-muted{% endif %}">
                                         {{ query.mean_duration_formatted }}
                                         <br><small class="text-muted" style="font-size: 0.65rem;">{{ query.mean_duration_raw }}</small>
@@ -234,7 +266,7 @@
                                         <br><small class="text-muted" style="font-size: 0.65rem;">{{ query.max_duration_raw }}</small>
                                     </div>
                                 </td>
-                                <td class="text-end">
+                                <td class="text-end" data-sort="total-time" data-value="{{ query.sum_duration }}">
                                     <strong class="{% if query.sum_duration > 300000 %}text-danger{% elif query.sum_duration > 60000 %}text-warning{% else %}text-muted{% endif %}">
                                         {{ query.sum_duration_formatted }}
                                     </strong>
@@ -303,6 +335,7 @@
 <script>
     // Prepare data for Plotly
     const trendData = {{ trend_data | tojson | safe }};
+    const bucketMinutes = {{ bucket_minutes | tojson }};
     const queryDetails = {{ query_details | tojson | safe }};
     
     // Group data by operation type for different colors
@@ -335,15 +368,18 @@
                     color: 'white'
                 }
             },
-            text: opData.map(d => 
-                `<b>${d.namespace}</b><br>` +
-                `Operation: ${d.operation}<br>` +
-                `Duration: ${d.duration.toLocaleString()}ms<br>` +
-                `Avg for Pattern: ${d.avg_duration.toFixed(0)}ms<br>` +
-                `Query Hash: ${d.query_hash}<br>` +
-                `Time: ${new Date(d.timestamp).toLocaleString()}<br>` +
-                `<i>Click for details</i>`
-            ),
+            text: opData.map(d => {
+                const bucketInfo = bucketMinutes ? `Bucket Count: ${(d.bucket_count || 0).toLocaleString()}<br>` : '';
+                const timeRange = bucketMinutes && d.bucket_end ? `Range: ${new Date(d.timestamp).toLocaleString()} → ${new Date(d.bucket_end).toLocaleString()}<br>` : `Time: ${new Date(d.timestamp).toLocaleString()}<br>`;
+                return `<b>${d.namespace}</b><br>` +
+                    `Operation: ${d.operation}<br>` +
+                    `Duration: ${d.duration.toLocaleString()}ms<br>` +
+                    `Avg for Pattern: ${d.avg_duration.toFixed(0)}ms<br>` +
+                    `${bucketInfo}` +
+                    `Query Hash: ${d.query_hash}<br>` +
+                    `${timeRange}` +
+                    `<i>Click for details</i>`;
+            }),
             hovertemplate: '%{text}<extra></extra>',
             customdata: opData.map(d => ({
                 query_hash: d.query_hash,
@@ -351,7 +387,9 @@
                 operation: d.operation,
                 duration: d.duration,
                 timestamp: d.timestamp,
-                avg_duration: d.avg_duration
+                avg_duration: d.avg_duration,
+                bucketCount: d.bucket_count || 0,
+                bucketEnd: d.bucket_end || null
             }))
         };
     });
@@ -414,6 +452,11 @@
             return;
         }
         
+        const durationLabel = bucketMinutes ? 'Bucket Avg Duration' : 'This Execution';
+        const rangeRow = bucketMinutes && pointData.bucketEnd
+            ? `<tr><td><strong>Range:</strong></td><td>${new Date(pointData.timestamp).toLocaleString()} → ${new Date(pointData.bucketEnd).toLocaleString()}</td></tr>`
+            : '';
+        const countRow = bucketMinutes ? `<tr><td><strong>Bucket Count:</strong></td><td>${(pointData.bucketCount || 0).toLocaleString()}</td></tr>` : '';
         const modalContent = document.getElementById('queryDetailsContent');
         modalContent.innerHTML = `
             <div class="row">
@@ -428,9 +471,11 @@
                 <div class="col-md-6">
                     <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
                     <table class="table table-sm">
-                        <tr><td><strong>This Execution:</strong></td><td>${pointData.duration.toLocaleString()}ms</td></tr>
+                        <tr><td><strong>${durationLabel}:</strong></td><td>${pointData.duration.toLocaleString()}ms</td></tr>
                         <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
                         <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
+                        ${rangeRow}
+                        ${countRow}
                     </table>
                 </div>
             </div>
@@ -443,9 +488,11 @@
                                 <tr><th>Timestamp</th><th>Duration</th></tr>
                             </thead>
                             <tbody>
-                                ${details.executions.map(ex => 
-                                    `<tr><td>${new Date(ex.timestamp).toLocaleString()}</td><td>${ex.duration}ms</td></tr>`
-                                ).join('')}
+                                ${details.executions.map(ex => {
+                                    const rangeText = (bucketMinutes && ex.bucket_end) ? `${new Date(ex.timestamp).toLocaleString()} → ${new Date(ex.bucket_end).toLocaleString()}` : new Date(ex.timestamp).toLocaleString();
+                                    const countText = (bucketMinutes && ex.bucket_count) ? ` (${ex.bucket_count.toLocaleString()} execs)` : '';
+                                    return `<tr><td>${rangeText}</td><td>${ex.duration}ms${countText}</td></tr>`;
+                                }).join('')}
                             </tbody>
                         </table>
                     </div>
@@ -546,9 +593,75 @@
         // Show modal
         new bootstrap.Modal(document.getElementById('queryDetailsModal')).show();
     }
+
+    function initTopQueriesSorting() {
+        const table = document.getElementById('top-queries-table');
+        if (!table) return;
+
+        const headers = table.querySelectorAll('th.sortable');
+        headers.forEach((header) => {
+            header.addEventListener('click', () => {
+                const sortKey = header.dataset.sortKey;
+                if (!sortKey) return;
+
+                const currentOrder = header.dataset.sortOrder;
+                const newOrder = currentOrder === 'desc' ? 'asc' : 'desc';
+
+                headers.forEach((h) => {
+                    h.removeAttribute('data-sort-order');
+                    const indicator = h.querySelector('.sort-indicator');
+                    if (indicator) indicator.textContent = '';
+                });
+
+                header.dataset.sortOrder = newOrder;
+                const indicator = header.querySelector('.sort-indicator');
+                if (indicator) indicator.textContent = newOrder === 'desc' ? '▼' : '▲';
+
+                sortTopQueryRows(table, sortKey, newOrder);
+            });
+        });
+    }
+
+    function sortTopQueryRows(table, sortKey, order) {
+        const tbody = table.querySelector('tbody');
+        if (!tbody) return;
+
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const descending = order === 'desc';
+
+        rows.sort((a, b) => {
+            const valueA = extractTopQueryValue(a, sortKey);
+            const valueB = extractTopQueryValue(b, sortKey);
+
+            if (valueA === valueB) return 0;
+            return descending ? valueB - valueA : valueA - valueB;
+        });
+
+        rows.forEach((row) => tbody.appendChild(row));
+    }
+
+    function extractTopQueryValue(row, sortKey) {
+        const cell = row.querySelector(`td[data-sort="${sortKey}"]`);
+        if (!cell) return 0;
+        const raw = cell.getAttribute('data-value');
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
     
     // Handle grouping option changes
     document.addEventListener('DOMContentLoaded', function() {
+        initTopQueriesSorting();
+        const intervalInputs = document.querySelectorAll('input[name="bucket_minutes"]');
+        intervalInputs.forEach((input) => {
+            input.addEventListener('change', function() {
+                if (this.checked) {
+                    const form = document.getElementById('query-trend-form');
+                    if (form) {
+                        form.submit();
+                    }
+                }
+            });
+        });
         const groupingOptions = document.querySelectorAll('input[name="groupingType"]');
         
         groupingOptions.forEach(option => {
