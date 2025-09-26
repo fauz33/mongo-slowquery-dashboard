@@ -711,6 +711,19 @@ def create_app() -> Flask:
 
     @app.route("/")
     def index():
+        try:
+            service = _get_duckdb_service()
+        except Exception:
+            return redirect(url_for("upload"))
+
+        has_any_data = any(
+            service._available_views.get(name, False)
+            for name in ("slow_queries", "authentications", "connections")
+        )
+
+        if not has_any_data:
+            return redirect(url_for("upload"))
+
         return redirect(url_for("dashboard"))
 
     @app.route("/dashboard")
@@ -819,10 +832,46 @@ def create_app() -> Flask:
         namespaces_seen: set[str] = set()
         operations_seen: set[str] = set()
 
+        def _resolve_group_key(data: Mapping[str, object]) -> str | None:
+            if not isinstance(data, Mapping):
+                return None
+            if grouping_type == "pattern_key":
+                candidates = (
+                    data.get("pattern_key"),
+                    data.get("query_hash"),
+                    data.get("namespace"),
+                )
+            elif grouping_type == "query_hash":
+                candidates = (
+                    data.get("query_hash"),
+                    data.get("pattern_key"),
+                    data.get("namespace"),
+                )
+            else:  # namespace grouping
+                candidates = (
+                    data.get("namespace"),
+                    data.get("pattern_key"),
+                    data.get("query_hash"),
+                )
+            for candidate in candidates:
+                if candidate is None:
+                    continue
+                value = str(candidate)
+                if not value:
+                    continue
+                if (
+                    grouping_type == "query_hash"
+                    and isinstance(candidate, str)
+                    and candidate.upper() == "MIXED"
+                ):
+                    continue
+                return value
+            return None
+
         for record in patterns:
             if not isinstance(record, dict):
                 continue
-            group_key = record.get("pattern_key") or record.get("namespace") or record.get("query_hash")
+            group_key = _resolve_group_key(record)
             if group_key is None:
                 continue
 
@@ -868,11 +917,11 @@ def create_app() -> Flask:
                     "sum_duration": float(record.get("total_duration_ms") or 0.0),
                     "sum_duration_formatted": sum_fmt,
                     "query_hash": actual_hash,
-                    "group_key": str(group_key),
+                    "group_key": group_key,
                 }
             )
 
-            pattern_map[str(group_key)] = {
+            pattern_map[group_key] = {
                 "namespace": namespace_value,
                 "database": record.get("database") or "unknown",
                 "collection": record.get("collection") or "unknown",
@@ -896,11 +945,10 @@ def create_app() -> Flask:
         for entry in executions:
             if not isinstance(entry, dict):
                 continue
-            group_key = entry.get("pattern_key") or entry.get("namespace") or entry.get("query_hash")
+            group_key = _resolve_group_key(entry)
             if group_key is None:
                 continue
-            key = str(group_key)
-            bucket = pattern_map.get(key)
+            bucket = pattern_map.get(group_key)
             if not bucket:
                 continue
             duration_ms = int(float(entry.get("duration_ms") or 0.0))
@@ -924,11 +972,12 @@ def create_app() -> Flask:
         for entry in executions:
             if not isinstance(entry, dict):
                 continue
-            group_key = entry.get("pattern_key") or entry.get("namespace") or entry.get("query_hash")
+            group_key = _resolve_group_key(entry)
             if group_key is None:
                 continue
-            key = str(group_key)
-            bucket = pattern_map.get(key)
+            bucket = pattern_map.get(group_key)
+            if not bucket:
+                continue
             avg_duration = bucket.get("avg_duration") if bucket else 0.0
             bucket_count = int(entry.get("bucket_execution_count") or 0)
             end_ts = entry.get("bucket_end")
@@ -938,8 +987,8 @@ def create_app() -> Flask:
                     "duration": int(float(entry.get("duration_ms") or 0.0)),
                     "operation": (entry.get("operation") or "unknown").lower(),
                     "namespace": entry.get("namespace") or "unknown.unknown",
-                    "query_hash": bucket.get("query_hash_value", key),
-                    "group_key": key,
+                    "query_hash": bucket.get("query_hash_value", group_key),
+                    "group_key": group_key,
                     "avg_duration": float(avg_duration or 0.0),
                     "bucket_count": bucket_count,
                     "bucket_end": end_ts,
@@ -958,7 +1007,7 @@ def create_app() -> Flask:
                 "total_duration": bucket.get("total_duration", 0.0),
                 "sample_query": bucket.get("sample_query"),
                 "executions": bucket.get("executions", []),
-                    "query_hash": bucket.get("query_hash_value", key),
+                "query_hash": bucket.get("query_hash_value", key),
                 "docs_examined": bucket.get("docs_examined", 0),
                 "docs_returned": bucket.get("docs_returned", 0),
                 "is_synthetic_hash": bucket.get("is_synthetic_hash", False),

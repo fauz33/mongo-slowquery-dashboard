@@ -462,20 +462,21 @@
         }
         const docsExamined = details.docs_examined || 0;
         const docsReturned = details.docs_returned || 0;
-                const displayHash = fullHash.length > 10 ? `${fullHash.slice(0, 10)}...` : fullHash;
-                const hashMarkup = `<code title="${fullHash}">${displayHash}</code>${isSynthetic ? ' <span class="badge bg-secondary ms-2">Synthetic</span>' : ''}`;
-                const durationLabel = bucketMinutes ? 'Bucket Avg Duration' : 'This Execution';
-                const rangeRow = bucketMinutes && pointData.bucketEnd
-                    ? `<tr><td><strong>Range:</strong></td><td>${new Date(pointData.timestamp).toLocaleString()} → ${new Date(pointData.bucketEnd).toLocaleString()}</td></tr>`
-                    : '';
-                const countRow = bucketMinutes ? `<tr><td><strong>Bucket Count:</strong></td><td>${(pointData.bucketCount || 0).toLocaleString()}</td></tr>` : '';
-                const docsRow = docsExamined ? `<tr><td><strong>Docs Examined:</strong></td><td>${docsExamined.toLocaleString()}</td></tr>` : '';
-                const returnedRow = (docsExamined || docsReturned) ? `<tr><td><strong>Docs Returned:</strong></td><td>${docsReturned.toLocaleString()}</td></tr>` : '';
-                const modalContent = document.getElementById('queryDetailsContent');
-                modalContent.innerHTML = `
-                    <div class="row">
-                        <div class="col-md-6">
-                            <h6><i class="fas fa-database"></i> Query Information</h6>
+        const fullQueryText = details.sample_query || '';
+        const displayHash = fullHash.length > 10 ? `${fullHash.slice(0, 10)}...` : fullHash;
+        const hashMarkup = `<code title="${fullHash}">${displayHash}</code>${isSynthetic ? ' <span class="badge bg-secondary ms-2">Synthetic</span>' : ''}`;
+        const durationLabel = bucketMinutes ? 'Bucket Avg Duration' : 'This Execution';
+        const rangeRow = bucketMinutes && pointData.bucketEnd
+            ? `<tr><td><strong>Range:</strong></td><td>${new Date(pointData.timestamp).toLocaleString()} → ${new Date(pointData.bucketEnd).toLocaleString()}</td></tr>`
+            : '';
+        const countRow = bucketMinutes ? `<tr><td><strong>Bucket Count:</strong></td><td>${(pointData.bucketCount || 0).toLocaleString()}</td></tr>` : '';
+        const docsRow = docsExamined ? `<tr><td><strong>Docs Examined:</strong></td><td>${docsExamined.toLocaleString()}</td></tr>` : '';
+        const returnedRow = (docsExamined || docsReturned) ? `<tr><td><strong>Docs Returned:</strong></td><td>${docsReturned.toLocaleString()}</td></tr>` : '';
+        const modalContent = document.getElementById('queryDetailsContent');
+        modalContent.innerHTML = `
+            <div class="row">
+                <div class="col-md-6">
+                    <h6><i class="fas fa-database"></i> Query Information</h6>
                     <table class="table table-sm">
                         <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
                         <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
@@ -485,13 +486,13 @@
                 <div class="col-md-6">
                     <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
                     <table class="table table-sm">
-                                <tr><td><strong>${durationLabel}:</strong></td><td>${pointData.duration.toLocaleString()}ms</td></tr>
-                                <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
-                                <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
-                                ${rangeRow}
-                                ${countRow}
-                                ${docsRow}
-                                ${returnedRow}
+                        <tr><td><strong>${durationLabel}:</strong></td><td>${pointData.duration.toLocaleString()}ms</td></tr>
+                        <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
+                        <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
+                        ${rangeRow}
+                        ${countRow}
+                        ${docsRow}
+                        ${returnedRow}
                     </table>
                 </div>
             </div>
@@ -517,24 +518,34 @@
             <div id="fullQueryContent" style="display: none;">
                 <div class="row mt-3">
                     <div class="col-12">
-                        <h6><i class="fas fa-code"></i> Full Query</h6>
-                        <pre class="bg-light p-3 border rounded" style="max-height: 300px; overflow-y: auto; font-size: 0.875rem;">${details.sample_query || 'Query text not available'}</pre>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="mb-0"><i class="fas fa-code"></i> Full Query</h6>
+                            <button type="button" class="btn btn-sm btn-primary text-white" id="copyFullQueryInlineBtn" disabled>
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <pre class="bg-light p-3 border rounded" style="max-height: 300px; overflow-y: auto; font-size: 0.875rem;">${fullQueryText || 'Query text not available'}</pre>
                     </div>
                 </div>
             </div>
         `;
+        attachFullQueryControls(fullQueryText);
         
         // Set up show full query button
-        document.getElementById('showFullQueryBtn').onclick = function() {
-            const fullQueryDiv = document.getElementById('fullQueryContent');
-            if (fullQueryDiv.style.display === 'none') {
-                fullQueryDiv.style.display = 'block';
-                this.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Full Query';
-            } else {
-                fullQueryDiv.style.display = 'none';
-                this.innerHTML = '<i class="fas fa-eye"></i> Show Full Query';
-            }
-        };
+        const toggleButton = document.getElementById('showFullQueryBtn');
+        if (toggleButton) {
+            toggleButton.innerHTML = '<i class="fas fa-eye"></i> Show Full Query';
+            toggleButton.onclick = function() {
+                const fullQueryDiv = document.getElementById('fullQueryContent');
+                if (fullQueryDiv.style.display === 'none') {
+                    fullQueryDiv.style.display = 'block';
+                    this.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Full Query';
+                } else {
+                    fullQueryDiv.style.display = 'none';
+                    this.innerHTML = '<i class="fas fa-eye"></i> Show Full Query';
+                }
+            };
+        }
         
         // Show modal
         new bootstrap.Modal(document.getElementById('queryDetailsModal')).show();
@@ -551,30 +562,31 @@
         const fullHash = details.query_hash || groupKey || 'unknown';
         const isSynthetic = details.is_synthetic_hash;
         const displayHash = fullHash.length > 10 ? `${fullHash.slice(0, 10)}...` : fullHash;
-            const hashMarkup = `<code title="${fullHash}">${displayHash}</code>${isSynthetic ? ' <span class="badge bg-secondary ms-2">Synthetic</span>' : ''}`;
-            const docsExamined = details.docs_examined || 0;
-            const docsReturned = details.docs_returned || 0;
-            const modalContent = document.getElementById('queryDetailsContent');
-            modalContent.innerHTML = `
-                <div class="row">
-                    <div class="col-md-6">
-                        <h6><i class="fas fa-database"></i> Query Information</h6>
-                        <table class="table table-sm">
-                            <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
-                            <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
-                            <tr><td><strong>Query Hash:</strong></td><td>${hashMarkup}</td></tr>
-                        </table>
-                    </div>
-                    <div class="col-md-6">
-                        <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
-                        <table class="table table-sm">
-                            <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
-                            <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
-                            ${docsExamined ? `<tr><td><strong>Docs Examined:</strong></td><td>${docsExamined.toLocaleString()}</td></tr>` : ''}
-                            ${(docsExamined || docsReturned) ? `<tr><td><strong>Docs Returned:</strong></td><td>${docsReturned.toLocaleString()}</td></tr>` : ''}
-                        </table>
-                    </div>
+        const fullQueryText = details.sample_query || '';
+        const hashMarkup = `<code title="${fullHash}">${displayHash}</code>${isSynthetic ? ' <span class="badge bg-secondary ms-2">Synthetic</span>' : ''}`;
+        const docsExamined = details.docs_examined || 0;
+        const docsReturned = details.docs_returned || 0;
+        const modalContent = document.getElementById('queryDetailsContent');
+        modalContent.innerHTML = `
+            <div class="row">
+                <div class="col-md-6">
+                    <h6><i class="fas fa-database"></i> Query Information</h6>
+                    <table class="table table-sm">
+                        <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
+                        <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
+                        <tr><td><strong>Query Hash:</strong></td><td>${hashMarkup}</td></tr>
+                    </table>
                 </div>
+                <div class="col-md-6">
+                    <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
+                    <table class="table table-sm">
+                        <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
+                        <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
+                        ${docsExamined ? `<tr><td><strong>Docs Examined:</strong></td><td>${docsExamined.toLocaleString()}</td></tr>` : ''}
+                        ${(docsExamined || docsReturned) ? `<tr><td><strong>Docs Returned:</strong></td><td>${docsReturned.toLocaleString()}</td></tr>` : ''}
+                    </table>
+                </div>
+            </div>
             <div class="row mt-3">
                 <div class="col-12">
                     <h6><i class="fas fa-history"></i> Recent Executions</h6>
@@ -595,24 +607,34 @@
             <div id="fullQueryContent" style="display: none;">
                 <div class="row mt-3">
                     <div class="col-12">
-                        <h6><i class="fas fa-code"></i> Full Query</h6>
-                        <pre class="bg-light p-3 border rounded" style="max-height: 300px; overflow-y: auto; font-size: 0.875rem;">${details.sample_query || 'Query text not available'}</pre>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="mb-0"><i class="fas fa-code"></i> Full Query</h6>
+                            <button type="button" class="btn btn-sm btn-primary text-white" id="copyFullQueryInlineBtn" disabled>
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <pre class="bg-light p-3 border rounded" style="max-height: 300px; overflow-y: auto; font-size: 0.875rem;">${fullQueryText || 'Query text not available'}</pre>
                     </div>
                 </div>
             </div>
         `;
+        attachFullQueryControls(fullQueryText);
         
         // Set up show full query button
-        document.getElementById('showFullQueryBtn').onclick = function() {
-            const fullQueryDiv = document.getElementById('fullQueryContent');
-            if (fullQueryDiv.style.display === 'none') {
-                fullQueryDiv.style.display = 'block';
-                this.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Full Query';
-            } else {
-                fullQueryDiv.style.display = 'none';
-                this.innerHTML = '<i class="fas fa-eye"></i> Show Full Query';
-            }
-        };
+        const tableToggleButton = document.getElementById('showFullQueryBtn');
+        if (tableToggleButton) {
+            tableToggleButton.innerHTML = '<i class="fas fa-eye"></i> Show Full Query';
+            tableToggleButton.onclick = function() {
+                const fullQueryDiv = document.getElementById('fullQueryContent');
+                if (fullQueryDiv.style.display === 'none') {
+                    fullQueryDiv.style.display = 'block';
+                    this.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Full Query';
+                } else {
+                    fullQueryDiv.style.display = 'none';
+                    this.innerHTML = '<i class="fas fa-eye"></i> Show Full Query';
+                }
+            };
+        }
         
         // Show modal
         new bootstrap.Modal(document.getElementById('queryDetailsModal')).show();
@@ -701,6 +723,64 @@
             });
         });
     });
+
+    function attachFullQueryControls(sampleQuery) {
+        const inlineBtn = document.getElementById('copyFullQueryInlineBtn');
+        if (!inlineBtn) return;
+        if (!inlineBtn.dataset.defaultLabel) {
+            inlineBtn.dataset.defaultLabel = inlineBtn.innerHTML;
+        } else if (inlineBtn.dataset.defaultLabel) {
+            inlineBtn.innerHTML = inlineBtn.dataset.defaultLabel;
+        }
+        if (!inlineBtn.dataset.defaultClass) {
+            inlineBtn.dataset.defaultClass = inlineBtn.className;
+        } else if (inlineBtn.dataset.defaultClass) {
+            inlineBtn.className = inlineBtn.dataset.defaultClass;
+        }
+        const hasQuery = Boolean(sampleQuery);
+        inlineBtn.disabled = !hasQuery;
+        inlineBtn.dataset.query = hasQuery ? sampleQuery : '';
+        inlineBtn.onclick = onCopyInlineFullQueryClicked;
+    }
+
+    async function onCopyInlineFullQueryClicked(event) {
+        const inlineBtn = event?.currentTarget || document.getElementById('copyFullQueryInlineBtn');
+        await copyQueryFromButton(inlineBtn);
+    }
+
+    async function copyQueryFromButton(button) {
+        if (!button || button.disabled) return;
+        const queryText = button.dataset.query || '';
+        if (!queryText) return;
+
+        const defaultLabel = button.dataset.defaultLabel || button.innerHTML;
+        const defaultClass = button.dataset.defaultClass || button.className;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(queryText);
+            } else {
+                const textArea = document.createElement('textarea');
+                textArea.value = queryText;
+                textArea.style.position = 'fixed';
+                textArea.style.top = '-9999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }
+            button.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            button.className = 'btn btn-sm btn-success text-white';
+        } catch (error) {
+            button.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Copy Failed';
+            button.className = 'btn btn-sm btn-danger text-white';
+        }
+
+        setTimeout(() => {
+            button.innerHTML = defaultLabel;
+            button.className = defaultClass;
+        }, 2000);
+    }
 </script>
 {% endif %}
 {% endblock %}

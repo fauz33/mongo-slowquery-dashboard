@@ -70,7 +70,7 @@ class DuckDBService:
     def refresh(self) -> None:
         """Re-scan the dataset root and register Parquet views."""
 
-        LOGGER.info("Refreshing DuckDB views under %s", self.dataset_root)
+        LOGGER.debug("Refreshing DuckDB views under %s", self.dataset_root)
         self._register_parquet_view("slow_queries", self._collect_files("slow_queries"))
         self._register_parquet_view(
             "authentications", self._collect_files("authentications")
