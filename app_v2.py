@@ -583,7 +583,6 @@ def create_app() -> Flask:
     def slow_query_analysis():
         service = _get_duckdb_service()
 
-        start_ts = end_ts = None
         date_offsets = service.get_date_offset_map()
         time_filters = _resolve_time_filters(request.args, service=service, date_offsets=date_offsets)
         start_dt = time_filters["start_dt"]
@@ -596,11 +595,28 @@ def create_app() -> Flask:
         start_date_display = request.args.get("start_date") or time_filters.get("start_local") or ""
         end_date_display = request.args.get("end_date") or time_filters.get("end_local") or ""
 
+        grouping_type = (request.args.get("grouping") or "pattern_key").strip() or "pattern_key"
+        if grouping_type not in {"pattern_key", "namespace", "query_hash"}:
+            grouping_type = "pattern_key"
+
+        grouping_labels = {
+            "pattern_key": "Patterns",
+            "namespace": "Namespaces",
+            "query_hash": "Query Hashes",
+        }
+        grouping_label = grouping_labels.get(grouping_type, "Patterns")
+
+        exclude_flag = request.args.get("exclude_system_db_flag")
+        if exclude_flag is None:
+            exclude_system_db = True
+        else:
+            exclude_system_db = request.args.get("exclude_system_db") is not None
+
         analysis = service.analyze_slow_query_patterns(
-            grouping="pattern_key",
+            grouping=grouping_type,
             start_ts=start_ts,
             end_ts=end_ts,
-            exclude_system=True,
+            exclude_system=exclude_system_db,
             page=1,
             per_page=SLOWQ_ALL_PAGE_LIMIT,
             order_by="total_duration_ms",
@@ -613,14 +629,26 @@ def create_app() -> Flask:
         for row in items:
             entry = dict(row)
             pattern_key = entry.get("pattern_key") or entry.get("namespace") or row.get("query_hash")
-            avg_duration = float(entry.get("avg_duration_ms") or 0.0)
-            min_duration = float(entry.get("min_duration_ms") or 0.0)
-            max_duration = float(entry.get("max_duration_ms") or 0.0)
-            selectivity = float(entry.get("selectivity_pct") or 0.0)
-            index_eff = float(entry.get("index_efficiency_pct") or 0.0)
+            avg_duration_value = (
+                entry.get("avg_duration_ms")
+                or entry.get("avg_duration")
+                or 0.0
+            )
+            min_duration_value = (
+                entry.get("min_duration_ms")
+                or entry.get("min_duration")
+                or 0.0
+            )
+            max_duration_value = (
+                entry.get("max_duration_ms")
+                or entry.get("max_duration")
+                or 0.0
+            )
+            selectivity = float(entry.get("selectivity_pct") or entry.get("avg_selectivity") or 0.0)
+            index_eff = float(entry.get("index_efficiency_pct") or entry.get("avg_index_efficiency") or 0.0)
 
-            first_seen = entry.get("first_seen_raw")
-            last_seen = entry.get("last_seen_raw")
+            first_seen_value = entry.get("first_seen_raw") or entry.get("first_seen")
+            last_seen_value = entry.get("last_seen_raw") or entry.get("last_seen")
 
             entry.update(
                 {
@@ -628,19 +656,32 @@ def create_app() -> Flask:
                     "database": entry.get("database") or "unknown",
                     "collection": entry.get("collection") or "unknown",
                     "query_hash": entry.get("query_hash") or "unknown",
-                    "query_type": entry.get("operation") or "unknown",
+                    "query_type": entry.get("operation") or entry.get("query_type") or "unknown",
                     "total_count": int(entry.get("execution_count") or entry.get("total_count") or 0),
-                    "avg_duration": int(round(avg_duration)),
-                    "min_duration": int(round(min_duration)),
-                    "max_duration": int(round(max_duration)),
+                    "avg_duration": int(round(float(avg_duration_value))),
+                    "min_duration": int(round(float(min_duration_value))),
+                    "max_duration": int(round(float(max_duration_value))),
                     "avg_selectivity": selectivity,
                     "avg_index_efficiency": index_eff,
                     "total_docs_examined": int(entry.get("total_docs_examined") or 0),
                     "total_returned": int(entry.get("total_docs_returned") or 0),
-                    "first_seen": _parse_iso_datetime(first_seen) if isinstance(first_seen, str) else None,
-                    "last_seen": _parse_iso_datetime(last_seen) if isinstance(last_seen, str) else None,
+                    "first_seen": (
+                        _parse_iso_datetime(first_seen_value)
+                        if isinstance(first_seen_value, str)
+                        else first_seen_value
+                    ),
+                    "last_seen": (
+                        _parse_iso_datetime(last_seen_value)
+                        if isinstance(last_seen_value, str)
+                        else last_seen_value
+                    ),
                     "slowest_query_full": entry.get("slowest_query_full"),
                     "sample_query": entry.get("sample_query") or entry.get("slowest_query_full"),
+                    "group_key": pattern_key,
+                    "is_synthetic_hash": bool(
+                        isinstance(entry.get("query_hash"), str)
+                        and len(entry.get("query_hash")) > 10
+                    ),
                 }
             )
 
@@ -661,6 +702,9 @@ def create_app() -> Flask:
             "min_date": _format_datetime_for_input(min_date),
             "max_date": _format_datetime_for_input(max_date),
             "pagination": None,
+            "grouping_type": grouping_type,
+            "grouping_label": grouping_label,
+            "exclude_system_db": exclude_system_db,
         }
 
         return render_template("slow_query_analysis.html", **context)
@@ -793,6 +837,19 @@ def create_app() -> Flask:
             operation_value = record.get("operation") or "unknown"
             operations_seen.add(str(operation_value))
 
+            raw_hash = record.get("query_hash")
+            if isinstance(raw_hash, str) and raw_hash and raw_hash.upper() != "MIXED":
+                actual_hash = raw_hash
+            elif grouping_type == "pattern_key" and isinstance(group_key, str) and "::" in group_key:
+                actual_hash = group_key.split("::")[-1]
+            else:
+                actual_hash = str(group_key) if group_key is not None else "unknown"
+            if not actual_hash:
+                actual_hash = "unknown"
+            hash_upper = actual_hash.upper() if isinstance(actual_hash, str) else ""
+            is_hex = all(ch in "0123456789ABCDEF" for ch in hash_upper)
+            is_synthetic = isinstance(actual_hash, str) and len(actual_hash) > 10 and is_hex
+
             mean_fmt, mean_raw = _format_duration_pair(avg_duration)
             max_fmt, max_raw = _format_duration_pair(record.get("max_duration_ms"))
             sum_fmt = _format_total_duration(record.get("total_duration_ms"))
@@ -810,7 +867,8 @@ def create_app() -> Flask:
                     "max_duration_raw": max_raw,
                     "sum_duration": float(record.get("total_duration_ms") or 0.0),
                     "sum_duration_formatted": sum_fmt,
-                    "query_hash": group_key,
+                    "query_hash": actual_hash,
+                    "group_key": str(group_key),
                 }
             )
 
@@ -828,6 +886,8 @@ def create_app() -> Flask:
                 "docs_returned": int(record.get("docs_returned") or 0),
                 "sample_query": record.get("sample_query"),
                 "executions": [],
+                "is_synthetic_hash": is_synthetic,
+                "query_hash_value": actual_hash,
             }
 
         top_queries.sort(key=lambda row: row.get("sum_duration", 0), reverse=True)
@@ -878,10 +938,12 @@ def create_app() -> Flask:
                     "duration": int(float(entry.get("duration_ms") or 0.0)),
                     "operation": (entry.get("operation") or "unknown").lower(),
                     "namespace": entry.get("namespace") or "unknown.unknown",
-                    "query_hash": key,
+                    "query_hash": bucket.get("query_hash_value", key),
+                    "group_key": key,
                     "avg_duration": float(avg_duration or 0.0),
                     "bucket_count": bucket_count,
                     "bucket_end": end_ts,
+                    "is_synthetic_hash": bucket.get("is_synthetic_hash", False),
                 }
             )
 
@@ -896,6 +958,10 @@ def create_app() -> Flask:
                 "total_duration": bucket.get("total_duration", 0.0),
                 "sample_query": bucket.get("sample_query"),
                 "executions": bucket.get("executions", []),
+                    "query_hash": bucket.get("query_hash_value", key),
+                "docs_examined": bucket.get("docs_examined", 0),
+                "docs_returned": bucket.get("docs_returned", 0),
+                "is_synthetic_hash": bucket.get("is_synthetic_hash", False),
             }
 
         avg_duration = total_duration / total_execs if total_execs else 0.0

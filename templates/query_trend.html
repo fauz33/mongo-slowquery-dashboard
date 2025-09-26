@@ -273,7 +273,7 @@
                                 </td>
                                 <td class="text-center">
                                     <button class="btn btn-outline-primary btn-sm" 
-                                            onclick="showQueryDetails('{{ query.query_hash }}')"
+                                            onclick="showQueryDetails('{{ query.group_key }}')"
                                             title="View query details">
                                         <i class="fas fa-info-circle"></i> Details
                                     </button>
@@ -309,7 +309,7 @@
 
 <!-- Query Details Modal -->
 <div class="modal fade" id="queryDetailsModal" tabindex="-1" aria-labelledby="queryDetailsModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="queryDetailsModalLabel">
@@ -383,13 +383,15 @@
             hovertemplate: '%{text}<extra></extra>',
             customdata: opData.map(d => ({
                 query_hash: d.query_hash,
+                groupKey: d.group_key || d.query_hash,
                 namespace: d.namespace,
                 operation: d.operation,
                 duration: d.duration,
                 timestamp: d.timestamp,
                 avg_duration: d.avg_duration,
                 bucketCount: d.bucket_count || 0,
-                bucketEnd: d.bucket_end || null
+                bucketEnd: d.bucket_end || null,
+                isSynthetic: d.is_synthetic_hash || false
             }))
         };
     });
@@ -446,36 +448,50 @@
     
     // Function to show query details from chart click
     function showQueryDetailsFromChart(pointData) {
-        const details = queryDetails[pointData.query_hash];
+        const groupKey = pointData.groupKey || pointData.query_hash;
+        const details = queryDetails[groupKey];
         if (!details) {
             alert('Query details not available');
             return;
         }
         
-        const durationLabel = bucketMinutes ? 'Bucket Avg Duration' : 'This Execution';
-        const rangeRow = bucketMinutes && pointData.bucketEnd
-            ? `<tr><td><strong>Range:</strong></td><td>${new Date(pointData.timestamp).toLocaleString()} → ${new Date(pointData.bucketEnd).toLocaleString()}</td></tr>`
-            : '';
-        const countRow = bucketMinutes ? `<tr><td><strong>Bucket Count:</strong></td><td>${(pointData.bucketCount || 0).toLocaleString()}</td></tr>` : '';
-        const modalContent = document.getElementById('queryDetailsContent');
-        modalContent.innerHTML = `
-            <div class="row">
-                <div class="col-md-6">
-                    <h6><i class="fas fa-database"></i> Query Information</h6>
+        const fullHash = details?.query_hash || pointData.query_hash || groupKey || 'unknown';
+        let isSynthetic = details && details.is_synthetic_hash;
+        if (!isSynthetic && pointData.isSynthetic) {
+            isSynthetic = true;
+        }
+        const docsExamined = details.docs_examined || 0;
+        const docsReturned = details.docs_returned || 0;
+                const displayHash = fullHash.length > 10 ? `${fullHash.slice(0, 10)}...` : fullHash;
+                const hashMarkup = `<code title="${fullHash}">${displayHash}</code>${isSynthetic ? ' <span class="badge bg-secondary ms-2">Synthetic</span>' : ''}`;
+                const durationLabel = bucketMinutes ? 'Bucket Avg Duration' : 'This Execution';
+                const rangeRow = bucketMinutes && pointData.bucketEnd
+                    ? `<tr><td><strong>Range:</strong></td><td>${new Date(pointData.timestamp).toLocaleString()} → ${new Date(pointData.bucketEnd).toLocaleString()}</td></tr>`
+                    : '';
+                const countRow = bucketMinutes ? `<tr><td><strong>Bucket Count:</strong></td><td>${(pointData.bucketCount || 0).toLocaleString()}</td></tr>` : '';
+                const docsRow = docsExamined ? `<tr><td><strong>Docs Examined:</strong></td><td>${docsExamined.toLocaleString()}</td></tr>` : '';
+                const returnedRow = (docsExamined || docsReturned) ? `<tr><td><strong>Docs Returned:</strong></td><td>${docsReturned.toLocaleString()}</td></tr>` : '';
+                const modalContent = document.getElementById('queryDetailsContent');
+                modalContent.innerHTML = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6><i class="fas fa-database"></i> Query Information</h6>
                     <table class="table table-sm">
                         <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
                         <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
-                        <tr><td><strong>Query Hash:</strong></td><td><code>${pointData.query_hash}</code></td></tr>
+                        <tr><td><strong>Query Hash:</strong></td><td>${hashMarkup}</td></tr>
                     </table>
                 </div>
                 <div class="col-md-6">
                     <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
                     <table class="table table-sm">
-                        <tr><td><strong>${durationLabel}:</strong></td><td>${pointData.duration.toLocaleString()}ms</td></tr>
-                        <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
-                        <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
-                        ${rangeRow}
-                        ${countRow}
+                                <tr><td><strong>${durationLabel}:</strong></td><td>${pointData.duration.toLocaleString()}ms</td></tr>
+                                <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
+                                <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
+                                ${rangeRow}
+                                ${countRow}
+                                ${docsRow}
+                                ${returnedRow}
                     </table>
                 </div>
             </div>
@@ -525,32 +541,40 @@
     }
     
     // Function to show query details from table button
-    function showQueryDetails(queryHash) {
-        const details = queryDetails[queryHash];
+    function showQueryDetails(groupKey) {
+        const details = queryDetails[groupKey];
         if (!details) {
             alert('Query details not available');
             return;
         }
-        
-        const modalContent = document.getElementById('queryDetailsContent');
-        modalContent.innerHTML = `
-            <div class="row">
-                <div class="col-md-6">
-                    <h6><i class="fas fa-database"></i> Query Information</h6>
-                    <table class="table table-sm">
-                        <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
-                        <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
-                        <tr><td><strong>Query Hash:</strong></td><td><code>${queryHash}</code></td></tr>
-                    </table>
+
+        const fullHash = details.query_hash || groupKey || 'unknown';
+        const isSynthetic = details.is_synthetic_hash;
+        const displayHash = fullHash.length > 10 ? `${fullHash.slice(0, 10)}...` : fullHash;
+            const hashMarkup = `<code title="${fullHash}">${displayHash}</code>${isSynthetic ? ' <span class="badge bg-secondary ms-2">Synthetic</span>' : ''}`;
+            const docsExamined = details.docs_examined || 0;
+            const docsReturned = details.docs_returned || 0;
+            const modalContent = document.getElementById('queryDetailsContent');
+            modalContent.innerHTML = `
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-database"></i> Query Information</h6>
+                        <table class="table table-sm">
+                            <tr><td><strong>Namespace:</strong></td><td>${details.namespace}</td></tr>
+                            <tr><td><strong>Operation:</strong></td><td><span class="badge bg-primary">${details.operation_type}</span></td></tr>
+                            <tr><td><strong>Query Hash:</strong></td><td>${hashMarkup}</td></tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
+                        <table class="table table-sm">
+                            <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
+                            <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
+                            ${docsExamined ? `<tr><td><strong>Docs Examined:</strong></td><td>${docsExamined.toLocaleString()}</td></tr>` : ''}
+                            ${(docsExamined || docsReturned) ? `<tr><td><strong>Docs Returned:</strong></td><td>${docsReturned.toLocaleString()}</td></tr>` : ''}
+                        </table>
+                    </div>
                 </div>
-                <div class="col-md-6">
-                    <h6><i class="fas fa-tachometer-alt"></i> Performance Metrics</h6>
-                    <table class="table table-sm">
-                        <tr><td><strong>Average Duration:</strong></td><td>${details.avg_duration.toFixed(0)}ms</td></tr>
-                        <tr><td><strong>Total Executions:</strong></td><td>${details.execution_count.toLocaleString()}</td></tr>
-                    </table>
-                </div>
-            </div>
             <div class="row mt-3">
                 <div class="col-12">
                     <h6><i class="fas fa-history"></i> Recent Executions</h6>

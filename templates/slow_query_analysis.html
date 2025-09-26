@@ -43,7 +43,8 @@
     vertical-align: middle !important;
 }
 
-.table td:nth-child(2) {
+.table td:nth-child(2),
+.table td:nth-child(3) {
     text-align: left !important;
 }
 </style>
@@ -80,7 +81,33 @@
                 {% endif %}
             </div>
             <div class="card-body">
-                <form method="GET" action="{{ url_for('slow_query_analysis') }}" class="row g-3">
+                <form method="GET" action="{{ url_for('slow_query_analysis') }}" class="row g-3" id="analysis-filter-form">
+                    <input type="hidden" name="exclude_system_db_flag" value="1">
+                    <div class="col-12">
+                        <div class="d-flex flex-wrap align-items-center">
+                            <span class="me-2 fw-bold text-info"><i class="fas fa-object-group me-1"></i>Group By:</span>
+                            <div class="btn-group" role="group" aria-label="Grouping selection">
+                                {% set group_options = [
+                                    {'label': 'Pattern', 'value': 'pattern_key'},
+                                    {'label': 'Namespace', 'value': 'namespace'},
+                                    {'label': 'Query Hash', 'value': 'query_hash'}
+                                ] %}
+                                {% for option in group_options %}
+                                <input type="radio" class="btn-check" name="grouping" id="grouping_{{ option.value }}" value="{{ option.value }}" {% if grouping_type == option.value %}checked{% endif %}>
+                                <label class="btn btn-outline-secondary btn-sm" for="grouping_{{ option.value }}">{{ option.label }}</label>
+                                {% endfor %}
+                            </div>
+                            <small class="text-muted ms-3">
+                                {% if grouping_type == 'pattern_key' %}
+                                    Groups by query structure + namespace + plan summary.
+                                {% elif grouping_type == 'namespace' %}
+                                    Groups by database.collection only.
+                                {% else %}
+                                    Groups by query hash (structure).
+                                {% endif %}
+                            </small>
+                        </div>
+                    </div>
                     <div class="col-md-6">
                         <label for="start_date" class="form-label">Start Date</label>
                         <input type="datetime-local" class="form-control" id="start_date" name="start_date" 
@@ -102,6 +129,13 @@
                         {% endif %}
                     </div>
                     <div class="col-md-12 mt-2">
+                        <input type="hidden" name="exclude_system_db_flag" value="1">
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" value="1" id="exclude_system_db" name="exclude_system_db" {% if exclude_system_db %}checked{% endif %}>
+                            <label class="form-check-label" for="exclude_system_db">
+                                Exclude MongoDB system databases
+                            </label>
+                        </div>
                         {% if min_date and max_date %}
                         <div class="mb-2">
                             <small class="text-muted me-2">Quick Select:</small>
@@ -141,7 +175,7 @@
             <div class="card-body">
                 <div class="row no-gutters align-items-center">
                     <div class="col mr-2">
-                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Unique Query Patterns</div>
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Unique {{ grouping_label }}</div>
                         <div class="h5 mb-0 font-weight-bold text-gray-800">{{ patterns|length }}</div>
                     </div>
                     <div class="col-auto">
@@ -234,11 +268,14 @@
 <div class="row">
     <div class="col-12">
         <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">
-                    <i class="fas fa-chart-bar me-2"></i>Query Pattern Performance Analysis
-                    <small class="text-muted ms-2">(Sorted by total impact: avg duration × execution count)</small>
-                </h5>
+            <div class="card-header d-flex flex-column flex-md-row justify-content-between align-items-md-center">
+                <div>
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-bar me-2"></i>{{ grouping_label }} Performance Analysis
+                    </h5>
+                    <small class="text-muted">(Sorted by total impact: avg duration × execution count)</small>
+                </div>
+                <span class="badge bg-light text-muted mt-2 mt-md-0">Group By: {{ grouping_label }}</span>
             </div>
             <div class="card-body">
                 <!-- Pagination controls -->
@@ -253,13 +290,13 @@
                                 <th style="color: #000; font-weight: bold;">Priority</th>
                                 <th style="color: #000; font-weight: bold;">Collection</th>
                                 <th style="color: #000; font-weight: bold;">Hash</th>
-                                <th style="color: #000; font-weight: bold;">Type</th>
+                                <th style="color: #000; font-weight: bold;">Operation</th>
                                 <th style="color: #000; font-weight: bold;">Plan</th>
                                 <th style="color: #000; font-weight: bold;">Executions</th>
                                 <th style="color: #000; font-weight: bold;">Avg Duration</th>
                                 <th style="color: #000; font-weight: bold;">Min/Max</th>
                                 <th style="color: #000; font-weight: bold;">Selectivity</th>
-                                <th class="actions-header" style="color: #000; font-weight: bold;">Actions</th>
+                                <th class="actions-header" style="color: #000; font-weight: bold;">Details</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -280,9 +317,14 @@
                                     </div>
                                 </td>
                                 <td>
-                                    <code class="text-primary">{{ pattern.query_hash[:12] }}...</code>
-                                    <br>
-                                    <small class="text-muted">{{ pattern.query_hash[12:] }}</small>
+                                    {% set hash_value = pattern.query_hash or '' %}
+                                    <code class="text-primary" title="{{ hash_value }}">
+                                        {% if hash_value|length > 10 %}
+                                            {{ hash_value[:10] }}...
+                                        {% else %}
+                                            {{ hash_value }}
+                                        {% endif %}
+                                    </code>
                                 </td>
                                 <td>
                                     <span class="badge bg-info">{{ pattern.query_type }}</span>
@@ -338,25 +380,27 @@
                                     {% endif %}
                                 </td>
                                 <td class="actions-column">
-                                    <button class="btn btn-sm btn-outline-primary view-details-btn action-btn" 
-                                            data-bs-toggle="modal" 
-                                            data-bs-target="#patternModal"
-                                            data-pattern-key="{{ pattern_key }}"
-                                            data-collection="{{ pattern.database }}.{{ pattern.collection }}"
-                                            data-query-type="{{ pattern.query_type }}"
-                                            data-plan-summary="{{ pattern.plan_summary }}"
-                                            data-query-hash="{{ pattern.query_hash }}"
-                                                            data-executions="{{ pattern.total_count }}"
-                                            data-avg-duration="{{ pattern.avg_duration|round|int }}"
-                                            data-min-duration="{{ pattern.min_duration|round|int }}"
-                                            data-max-duration="{{ pattern.max_duration|round|int }}"
-                                            data-selectivity="{{ pattern.avg_selectivity|round(1) }}"
-                                            data-total-returned="{{ pattern.total_returned }}"
-                                            data-total-docs-examined="{{ pattern.total_docs_examined }}"
-                                            data-index-efficiency="{{ pattern.avg_index_efficiency|round(1) }}"
-                                            data-optimization-potential="{{ pattern.optimization_potential }}"
-                                            data-slowest-query="{{ pattern.slowest_query_full|e }}"
-                                            title="View Details">
+                                    <button
+                                        class="btn btn-sm btn-outline-primary view-details-btn action-btn"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#patternModal"
+                                        data-pattern-key="{{ pattern_key }}"
+                                        data-collection="{{ pattern.database }}.{{ pattern.collection }}"
+                                        data-query-type="{{ pattern.query_type }}"
+                                        data-plan-summary="{{ pattern.plan_summary }}"
+                                        data-query-hash="{{ pattern.query_hash }}"
+                                        data-synthetic-hash="{{ 'true' if pattern.is_synthetic_hash else 'false' }}"
+                                        data-executions="{{ pattern.total_count }}"
+                                        data-avg-duration="{{ pattern.avg_duration|round|int }}"
+                                        data-min-duration="{{ pattern.min_duration|round|int }}"
+                                        data-max-duration="{{ pattern.max_duration|round|int }}"
+                                        data-selectivity="{{ pattern.avg_selectivity|round(1) }}"
+                                        data-total-returned="{{ pattern.total_returned }}"
+                                        data-total-docs-examined="{{ pattern.total_docs_examined }}"
+                                        data-index-efficiency="{{ pattern.avg_index_efficiency|round(1) }}"
+                                        data-optimization-potential="{{ pattern.optimization_potential }}"
+                                        data-slowest-query="{{ pattern.slowest_query_full|e }}"
+                                        title="View Details">
                                         <i class="fas fa-eye"></i>
                                     </button>
                                 </td>
@@ -395,6 +439,8 @@
                             <tr><td><strong>Total Executions:</strong></td><td id="modalExecutions"></td></tr>
                             <tr><td><strong>Avg Duration:</strong></td><td id="modalAvgDuration"></td></tr>
                             <tr><td><strong>Min/Max Duration:</strong></td><td id="modalMinMaxDuration"></td></tr>
+                            <tr id="modalDocsRow" style="display: none;"><td><strong>Docs Examined:</strong></td><td id="modalDocs"></td></tr>
+                            <tr id="modalReturnedRow" style="display: none;"><td><strong>Docs Returned:</strong></td><td id="modalReturned"></td></tr>
                         </table>
                     </div>
                 </div>
@@ -452,10 +498,10 @@
 // Global variable for copy functionality
 let currentPatternQuery = '';
 
-document.addEventListener('DOMContentLoaded', function() {
-    // Modal functionality
-    const patternModal = document.getElementById('patternModal');
-    const viewDetailsButtons = document.querySelectorAll('.view-details-btn');
+    document.addEventListener('DOMContentLoaded', function() {
+        // Modal functionality
+        const patternModal = document.getElementById('patternModal');
+        const viewDetailsButtons = document.querySelectorAll('.view-details-btn');
     
     viewDetailsButtons.forEach(button => {
         button.addEventListener('click', function() {
@@ -474,6 +520,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const indexEfficiency = parseFloat(this.getAttribute('data-index-efficiency'));
             const optimizationPotential = this.getAttribute('data-optimization-potential');
             const slowestQuery = this.getAttribute('data-slowest-query');
+            const isSynthetic = this.getAttribute('data-synthetic-hash') === 'true';
             
             // Populate modal with pattern data
             document.getElementById('modalCollection').textContent = collection;
@@ -483,12 +530,31 @@ document.addEventListener('DOMContentLoaded', function() {
                                   planSummary === 'IXSCAN' ? 'bg-success' : 'bg-secondary';
             document.getElementById('modalPlanSummary').innerHTML = `<span class="badge ${planBadgeClass}">${planSummary}</span>`;
             
-            document.getElementById('modalQueryHash').textContent = queryHash;
+            const hashCell = document.getElementById('modalQueryHash');
+            if (isSynthetic) {
+                hashCell.innerHTML = `${queryHash} <span class="badge bg-secondary ms-2">Synthetic</span>`;
+            } else {
+                hashCell.textContent = queryHash;
+            }
             
             // Performance statistics
             document.getElementById('modalExecutions').textContent = executions;
             document.getElementById('modalAvgDuration').textContent = `${avgDuration}ms`;
             document.getElementById('modalMinMaxDuration').textContent = `${minDuration}ms / ${maxDuration}ms`;
+            const docs = parseInt(totalDocsExamined, 10) || 0;
+            const returned = parseInt(totalReturned, 10) || 0;
+            if (docs > 0) {
+                document.getElementById('modalDocs').textContent = docs.toLocaleString();
+                document.getElementById('modalDocsRow').style.display = '';
+            } else {
+                document.getElementById('modalDocsRow').style.display = 'none';
+            }
+            if (returned > 0 || docs > 0) {
+                document.getElementById('modalReturned').textContent = returned.toLocaleString();
+                document.getElementById('modalReturnedRow').style.display = '';
+            } else {
+                document.getElementById('modalReturnedRow').style.display = 'none';
+            }
             
             // Efficiency metrics
             if (selectivity !== null && selectivity > 0 && totalDocsExamined > 0) {
@@ -516,8 +582,32 @@ document.addEventListener('DOMContentLoaded', function() {
     const exportBtn = document.getElementById('exportBtn');
     if (exportBtn) {
         exportBtn.addEventListener('click', function() {
-            const exportUrl = '{{ url_for("export_query_analysis") }}';
+            const params = new URLSearchParams(window.location.search);
+            const exportUrl = '{{ url_for("export_query_analysis") }}' + (params.toString() ? `?${params.toString()}` : '');
             window.open(exportUrl, '_blank');
+        });
+    }
+
+    // Auto-submit on grouping change
+    const groupingRadios = document.querySelectorAll('input[name="grouping"]');
+    groupingRadios.forEach((radio) => {
+        radio.addEventListener('change', function() {
+            if (this.checked) {
+                const form = document.getElementById('analysis-filter-form');
+                if (form) {
+                    form.submit();
+                }
+            }
+        });
+    });
+
+    const excludeCheckbox = document.getElementById('exclude_system_db');
+    if (excludeCheckbox) {
+        excludeCheckbox.addEventListener('change', function() {
+            const form = document.getElementById('analysis-filter-form');
+            if (form) {
+                form.submit();
+            }
         });
     }
 });
