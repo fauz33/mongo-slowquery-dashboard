@@ -108,6 +108,7 @@ archived_tests/
 PLAN_REFACTOR.md
 out/
 temp_test/
+tests/
 
 # Development artifacts
 .ruff_cache/
